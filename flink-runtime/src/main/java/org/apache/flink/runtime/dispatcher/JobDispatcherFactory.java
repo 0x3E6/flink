@@ -19,32 +19,57 @@
 package org.apache.flink.runtime.dispatcher;
 
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.runtime.dispatcher.cleanup.CheckpointResourcesCleanupRunnerFactory;
 import org.apache.flink.runtime.entrypoint.ClusterEntrypoint;
+import org.apache.flink.runtime.jobgraph.JobGraph;
+import org.apache.flink.runtime.jobmaster.JobResult;
 import org.apache.flink.runtime.rpc.RpcService;
+import org.apache.flink.util.Preconditions;
 
-import static org.apache.flink.runtime.entrypoint.ClusterEntrypoint.EXECUTION_MODE;
+import org.apache.flink.shaded.guava30.com.google.common.collect.Iterables;
 
-/**
- * {@link DispatcherFactory} which creates a {@link MiniDispatcher}.
- */
+import java.util.Collection;
+
+import static org.apache.flink.runtime.entrypoint.ClusterEntrypoint.INTERNAL_CLUSTER_EXECUTION_MODE;
+
+/** {@link DispatcherFactory} which creates a {@link MiniDispatcher}. */
 public enum JobDispatcherFactory implements DispatcherFactory {
-	INSTANCE;
+    INSTANCE;
 
-	@Override
-	public MiniDispatcher createDispatcher(
-			RpcService rpcService,
-			DispatcherId fencingToken,
-			DispatcherBootstrap dispatcherBootstrap,
-			PartialDispatcherServicesWithJobGraphStore partialDispatcherServicesWithJobGraphStore) throws Exception {
-		final Configuration configuration = partialDispatcherServicesWithJobGraphStore.getConfiguration();
-		final String executionModeValue = configuration.getString(EXECUTION_MODE);
-		final ClusterEntrypoint.ExecutionMode executionMode = ClusterEntrypoint.ExecutionMode.valueOf(executionModeValue);
+    @Override
+    public MiniDispatcher createDispatcher(
+            RpcService rpcService,
+            DispatcherId fencingToken,
+            Collection<JobGraph> recoveredJobs,
+            Collection<JobResult> recoveredDirtyJobResults,
+            DispatcherBootstrapFactory dispatcherBootstrapFactory,
+            PartialDispatcherServicesWithJobPersistenceComponents
+                    partialDispatcherServicesWithJobPersistenceComponents)
+            throws Exception {
+        final JobGraph recoveredJobGraph = Iterables.getOnlyElement(recoveredJobs, null);
+        final JobResult recoveredDirtyJob =
+                Iterables.getOnlyElement(recoveredDirtyJobResults, null);
 
-		return new MiniDispatcher(
-			rpcService,
-			fencingToken,
-			DispatcherServices.from(partialDispatcherServicesWithJobGraphStore, DefaultJobManagerRunnerFactory.INSTANCE),
-			dispatcherBootstrap,
-			executionMode);
-	}
+        Preconditions.checkArgument(
+                recoveredJobGraph == null ^ recoveredDirtyJob == null,
+                "Either the JobGraph or the recovered JobResult needs to be specified.");
+
+        final Configuration configuration =
+                partialDispatcherServicesWithJobPersistenceComponents.getConfiguration();
+        final String executionModeValue = configuration.getString(INTERNAL_CLUSTER_EXECUTION_MODE);
+        final ClusterEntrypoint.ExecutionMode executionMode =
+                ClusterEntrypoint.ExecutionMode.valueOf(executionModeValue);
+
+        return new MiniDispatcher(
+                rpcService,
+                fencingToken,
+                DispatcherServices.from(
+                        partialDispatcherServicesWithJobPersistenceComponents,
+                        JobMasterServiceLeadershipRunnerFactory.INSTANCE,
+                        CheckpointResourcesCleanupRunnerFactory.INSTANCE),
+                recoveredJobGraph,
+                recoveredDirtyJob,
+                dispatcherBootstrapFactory,
+                executionMode);
+    }
 }

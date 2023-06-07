@@ -25,6 +25,7 @@ import org.apache.flink.runtime.state.KeyGroupRangeAssignment;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaException;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer;
+import org.apache.flink.streaming.connectors.kafka.internals.KafkaTopicPartitionAssigner;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.PropertiesUtil;
 
@@ -32,182 +33,197 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 
 import java.io.IOException;
 import java.io.Serializable;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Properties;
 
 import static org.apache.flink.streaming.connectors.kafka.shuffle.FlinkKafkaShuffle.PARTITION_NUMBER;
 
 /**
- * Flink Kafka Shuffle Producer Function.
- * It is different from {@link FlinkKafkaProducer} in the way handling elements and watermarks
+ * Flink Kafka Shuffle Producer Function. It is different from {@link FlinkKafkaProducer} in the way
+ * handling elements and watermarks
  */
 @Internal
 public class FlinkKafkaShuffleProducer<IN, KEY> extends FlinkKafkaProducer<IN> {
-	private final KafkaSerializer<IN> kafkaSerializer;
-	private final KeySelector<IN, KEY> keySelector;
-	private final int numberOfPartitions;
+    private final KafkaSerializer<IN> kafkaSerializer;
+    private final KeySelector<IN, KEY> keySelector;
+    private final int numberOfPartitions;
 
-	FlinkKafkaShuffleProducer(
-			String defaultTopicId,
-			TypeSerializer<IN> typeSerializer,
-			Properties props,
-			KeySelector<IN, KEY> keySelector,
-			Semantic semantic,
-			int kafkaProducersPoolSize) {
-		super(defaultTopicId, (element, timestamp) -> null, props, semantic, kafkaProducersPoolSize);
+    private final Map<Integer, Integer> subtaskToPartitionMap;
 
-		this.kafkaSerializer = new KafkaSerializer<>(typeSerializer);
-		this.keySelector = keySelector;
+    FlinkKafkaShuffleProducer(
+            String defaultTopicId,
+            TypeSerializer<IN> typeSerializer,
+            Properties props,
+            KeySelector<IN, KEY> keySelector,
+            Semantic semantic,
+            int kafkaProducersPoolSize) {
+        super(
+                defaultTopicId,
+                (element, timestamp) -> null,
+                props,
+                semantic,
+                kafkaProducersPoolSize);
 
-		Preconditions.checkArgument(
-			props.getProperty(PARTITION_NUMBER) != null,
-			"Missing partition number for Kafka Shuffle");
-		numberOfPartitions = PropertiesUtil.getInt(props, PARTITION_NUMBER, Integer.MIN_VALUE);
-	}
+        this.kafkaSerializer = new KafkaSerializer<>(typeSerializer);
+        this.keySelector = keySelector;
 
-	/**
-	 * This is the function invoked to handle each element.
-	 *
-	 * @param transaction Transaction state;
-	 *                    elements are written to Kafka in transactions to guarantee different level of data consistency
-	 * @param next Element to handle
-	 * @param context Context needed to handle the element
-	 * @throws FlinkKafkaException for kafka error
-	 */
-	@Override
-	public void invoke(KafkaTransactionState transaction, IN next, Context context) throws FlinkKafkaException {
-		checkErroneous();
+        Preconditions.checkArgument(
+                props.getProperty(PARTITION_NUMBER) != null,
+                "Missing partition number for Kafka Shuffle");
+        numberOfPartitions = PropertiesUtil.getInt(props, PARTITION_NUMBER, Integer.MIN_VALUE);
+        subtaskToPartitionMap = new HashMap<>();
+    }
 
-		// write timestamp to Kafka if timestamp is available
-		Long timestamp = context.timestamp();
+    /**
+     * This is the function invoked to handle each element.
+     *
+     * @param transaction Transaction state; elements are written to Kafka in transactions to
+     *     guarantee different level of data consistency
+     * @param next Element to handle
+     * @param context Context needed to handle the element
+     * @throws FlinkKafkaException for kafka error
+     */
+    @Override
+    public void invoke(KafkaTransactionState transaction, IN next, Context context)
+            throws FlinkKafkaException {
+        checkErroneous();
 
-		int[] partitions = getPartitions(transaction);
-		int partitionIndex;
-		try {
-			partitionIndex = KeyGroupRangeAssignment
-				.assignKeyToParallelOperator(keySelector.getKey(next), partitions.length, partitions.length);
-		} catch (Exception e) {
-			throw new RuntimeException("Fail to assign a partition number to record", e);
-		}
+        // write timestamp to Kafka if timestamp is available
+        Long timestamp = context.timestamp();
 
-		ProducerRecord<byte[], byte[]> record = new ProducerRecord<>(
-			defaultTopicId,
-			partitionIndex,
-			timestamp,
-			null,
-			kafkaSerializer.serializeRecord(next, timestamp));
+        int[] partitions = getPartitions(transaction);
+        int partitionIndex;
+        try {
+            int subtaskIndex =
+                    KeyGroupRangeAssignment.assignKeyToParallelOperator(
+                            keySelector.getKey(next), partitions.length, partitions.length);
+            partitionIndex = subtaskToPartitionMap.get(subtaskIndex);
+        } catch (Exception e) {
+            throw new RuntimeException("Fail to assign a partition number to record", e);
+        }
 
-		pendingRecords.incrementAndGet();
-		transaction.getProducer().send(record, callback);
-	}
+        ProducerRecord<byte[], byte[]> record =
+                new ProducerRecord<>(
+                        defaultTopicId,
+                        partitionIndex,
+                        timestamp,
+                        null,
+                        kafkaSerializer.serializeRecord(next, timestamp));
 
-	/**
-	 * This is the function invoked to handle each watermark.
-	 *
-	 * @param watermark Watermark to handle
-	 * @throws FlinkKafkaException For kafka error
-	 */
-	public void invoke(Watermark watermark) throws FlinkKafkaException {
-		checkErroneous();
-		KafkaTransactionState transaction = currentTransaction();
+        pendingRecords.incrementAndGet();
+        transaction.getProducer().send(record, callback);
+    }
 
-		int[] partitions = getPartitions(transaction);
-		int subtask = getRuntimeContext().getIndexOfThisSubtask();
+    /**
+     * This is the function invoked to handle each watermark.
+     *
+     * @param watermark Watermark to handle
+     * @throws FlinkKafkaException For kafka error
+     */
+    public void invoke(Watermark watermark) throws FlinkKafkaException {
+        checkErroneous();
+        KafkaTransactionState transaction = currentTransaction();
 
-		// broadcast watermark
-		long timestamp = watermark.getTimestamp();
-		for (int partition : partitions) {
-			ProducerRecord<byte[], byte[]> record = new ProducerRecord<>(
-				defaultTopicId,
-				partition,
-				timestamp,
-				null,
-				kafkaSerializer.serializeWatermark(watermark, subtask));
+        int[] partitions = getPartitions(transaction);
+        int subtask = getRuntimeContext().getIndexOfThisSubtask();
 
-			pendingRecords.incrementAndGet();
-			transaction.getProducer().send(record, callback);
-		}
-	}
+        // broadcast watermark
+        long timestamp = watermark.getTimestamp();
+        for (int partition : partitions) {
+            ProducerRecord<byte[], byte[]> record =
+                    new ProducerRecord<>(
+                            defaultTopicId,
+                            partition,
+                            timestamp,
+                            null,
+                            kafkaSerializer.serializeWatermark(watermark, subtask));
 
-	private int[] getPartitions(KafkaTransactionState transaction) {
-		int[] partitions = topicPartitionsMap.get(defaultTopicId);
-		if (partitions == null) {
-			partitions = getPartitionsByTopic(defaultTopicId, transaction.getProducer());
-			topicPartitionsMap.put(defaultTopicId, partitions);
-		}
+            pendingRecords.incrementAndGet();
+            transaction.getProducer().send(record, callback);
+        }
+    }
 
-		Preconditions.checkArgument(partitions.length == numberOfPartitions);
+    private int[] getPartitions(KafkaTransactionState transaction) {
+        int[] partitions = topicPartitionsMap.get(defaultTopicId);
+        if (partitions == null) {
+            partitions = getPartitionsByTopic(defaultTopicId, transaction.getProducer());
+            topicPartitionsMap.put(defaultTopicId, partitions);
+            for (int i = 0; i < partitions.length; i++) {
+                subtaskToPartitionMap.put(
+                        KafkaTopicPartitionAssigner.assign(
+                                defaultTopicId, partitions[i], partitions.length),
+                        partitions[i]);
+            }
+        }
 
-		return partitions;
-	}
+        Preconditions.checkArgument(partitions.length == numberOfPartitions);
 
-	/**
-	 * Flink Kafka Shuffle Serializer.
-	 */
-	public static final class KafkaSerializer<IN> implements Serializable {
-		public static final int TAG_REC_WITH_TIMESTAMP = 0;
-		public static final int TAG_REC_WITHOUT_TIMESTAMP = 1;
-		public static final int TAG_WATERMARK = 2;
+        return partitions;
+    }
 
-		private static final long serialVersionUID = 2000002L;
-		// easy for updating SerDe format later
-		private static final int KAFKA_SHUFFLE_VERSION = 0;
+    /** Flink Kafka Shuffle Serializer. */
+    public static final class KafkaSerializer<IN> implements Serializable {
+        public static final int TAG_REC_WITH_TIMESTAMP = 0;
+        public static final int TAG_REC_WITHOUT_TIMESTAMP = 1;
+        public static final int TAG_WATERMARK = 2;
 
-		private final TypeSerializer<IN> serializer;
+        private static final long serialVersionUID = 2000002L;
+        // easy for updating SerDe format later
+        private static final int KAFKA_SHUFFLE_VERSION = 0;
 
-		private transient DataOutputSerializer dos;
+        private final TypeSerializer<IN> serializer;
 
-		KafkaSerializer(TypeSerializer<IN> serializer) {
-			this.serializer = serializer;
-		}
+        private transient DataOutputSerializer dos;
 
-		/**
-		 * Format: Version(byte), TAG(byte), [timestamp(long)], record.
-		 */
-		byte[] serializeRecord(IN record, Long timestamp) {
-			if (dos == null) {
-				dos = new DataOutputSerializer(16);
-			}
+        KafkaSerializer(TypeSerializer<IN> serializer) {
+            this.serializer = serializer;
+        }
 
-			try {
-				dos.write(KAFKA_SHUFFLE_VERSION);
+        /** Format: Version(byte), TAG(byte), [timestamp(long)], record. */
+        byte[] serializeRecord(IN record, Long timestamp) {
+            if (dos == null) {
+                dos = new DataOutputSerializer(16);
+            }
 
-				if (timestamp == null) {
-					dos.write(TAG_REC_WITHOUT_TIMESTAMP);
-				} else {
-					dos.write(TAG_REC_WITH_TIMESTAMP);
-					dos.writeLong(timestamp);
-				}
-				serializer.serialize(record, dos);
+            try {
+                dos.write(KAFKA_SHUFFLE_VERSION);
 
-			} catch (IOException e) {
-				throw new RuntimeException("Unable to serialize record", e);
-			}
+                if (timestamp == null) {
+                    dos.write(TAG_REC_WITHOUT_TIMESTAMP);
+                } else {
+                    dos.write(TAG_REC_WITH_TIMESTAMP);
+                    dos.writeLong(timestamp);
+                }
+                serializer.serialize(record, dos);
 
-			byte[] ret = dos.getCopyOfBuffer();
-			dos.clear();
-			return ret;
-		}
+            } catch (IOException e) {
+                throw new RuntimeException("Unable to serialize record", e);
+            }
 
-		/**
-		 * Format: Version(byte), TAG(byte), subtask(int), timestamp(long).
-		 */
-		byte[] serializeWatermark(Watermark watermark, int subtask) {
-			if (dos == null) {
-				dos = new DataOutputSerializer(16);
-			}
+            byte[] ret = dos.getCopyOfBuffer();
+            dos.clear();
+            return ret;
+        }
 
-			try {
-				dos.write(KAFKA_SHUFFLE_VERSION);
-				dos.write(TAG_WATERMARK);
-				dos.writeInt(subtask);
-				dos.writeLong(watermark.getTimestamp());
-			} catch (IOException e) {
-				throw new RuntimeException("Unable to serialize watermark", e);
-			}
+        /** Format: Version(byte), TAG(byte), subtask(int), timestamp(long). */
+        byte[] serializeWatermark(Watermark watermark, int subtask) {
+            if (dos == null) {
+                dos = new DataOutputSerializer(16);
+            }
 
-			byte[] ret = dos.getCopyOfBuffer();
-			dos.clear();
-			return ret;
-		}
-	}
+            try {
+                dos.write(KAFKA_SHUFFLE_VERSION);
+                dos.write(TAG_WATERMARK);
+                dos.writeInt(subtask);
+                dos.writeLong(watermark.getTimestamp());
+            } catch (IOException e) {
+                throw new RuntimeException("Unable to serialize watermark", e);
+            }
+
+            byte[] ret = dos.getCopyOfBuffer();
+            dos.clear();
+            return ret;
+        }
+    }
 }

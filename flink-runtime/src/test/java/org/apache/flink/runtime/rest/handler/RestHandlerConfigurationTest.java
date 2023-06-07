@@ -19,33 +19,88 @@
 package org.apache.flink.runtime.rest.handler;
 
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.JobManagerOptions;
+import org.apache.flink.configuration.SchedulerExecutionMode;
 import org.apache.flink.configuration.WebOptions;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.TestLoggerExtension;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Tests for {@link RestHandlerConfiguration}.
- */
-public class RestHandlerConfigurationTest extends TestLogger {
+/** Tests for {@link RestHandlerConfiguration}. */
+@ExtendWith(TestLoggerExtension.class)
+class RestHandlerConfigurationTest {
 
-	@Test
-	public void testWebSubmitFeatureFlagEnabled() {
-		testWebSubmitFeatureFlag(true);
-	}
+    @Test
+    void testWebSubmitFeatureFlagEnabled() {
+        testWebSubmitFeatureFlag(true);
+    }
 
-	@Test
-	public void testWebSubmitFeatureFlagDisabled() {
-		testWebSubmitFeatureFlag(false);
-	}
+    @Test
+    void testWebSubmitFeatureFlagDisabled() {
+        testWebSubmitFeatureFlag(false);
+    }
 
-	private static void testWebSubmitFeatureFlag(boolean webSubmitEnabled) {
-		final Configuration config = new Configuration();
-		config.setBoolean(WebOptions.SUBMIT_ENABLE, webSubmitEnabled);
+    @Test
+    void testWebCancelFeatureFlagEnabled() {
+        testWebCancelFeatureFlag(true);
+    }
 
-		RestHandlerConfiguration restHandlerConfiguration = RestHandlerConfiguration.fromConfiguration(config);
-		assertEquals(webSubmitEnabled, restHandlerConfiguration.isWebSubmitEnabled());
-	}
+    @Test
+    void testWebCancelFeatureFlagDisabled() {
+        testWebCancelFeatureFlag(false);
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "true,true,true,false",
+        "true,true,false,true",
+        "true,false,true,false",
+        "true,false,false,false",
+        "false,true,true,false",
+        "false,true,false,false",
+        "false,false,true,false",
+        "false,false,false,false",
+    })
+    void testWebRescaleFeatureFlagWithReactiveMode(
+            boolean webRescaleEnabled,
+            boolean adaptiveScheduler,
+            boolean reactiveMode,
+            boolean expectedResult) {
+        final Configuration config = new Configuration();
+        config.setBoolean(WebOptions.RESCALE_ENABLE, webRescaleEnabled);
+        if (adaptiveScheduler) {
+            config.set(JobManagerOptions.SCHEDULER, JobManagerOptions.SchedulerType.Adaptive);
+        } else {
+            config.set(JobManagerOptions.SCHEDULER, JobManagerOptions.SchedulerType.Default);
+        }
+        if (reactiveMode) {
+            config.set(JobManagerOptions.SCHEDULER_MODE, SchedulerExecutionMode.REACTIVE);
+        }
+        RestHandlerConfiguration restHandlerConfiguration =
+                RestHandlerConfiguration.fromConfiguration(config);
+        assertThat(restHandlerConfiguration.isWebRescaleEnabled()).isEqualTo(expectedResult);
+    }
+
+    private static void testWebSubmitFeatureFlag(boolean webSubmitEnabled) {
+        final Configuration config = new Configuration();
+        config.setBoolean(WebOptions.SUBMIT_ENABLE, webSubmitEnabled);
+
+        RestHandlerConfiguration restHandlerConfiguration =
+                RestHandlerConfiguration.fromConfiguration(config);
+        assertThat(restHandlerConfiguration.isWebSubmitEnabled()).isEqualTo(webSubmitEnabled);
+    }
+
+    private static void testWebCancelFeatureFlag(boolean webCancelEnabled) {
+        final Configuration config = new Configuration();
+        config.setBoolean(WebOptions.CANCEL_ENABLE, webCancelEnabled);
+
+        RestHandlerConfiguration restHandlerConfiguration =
+                RestHandlerConfiguration.fromConfiguration(config);
+        assertThat(restHandlerConfiguration.isWebCancelEnabled()).isEqualTo(webCancelEnabled);
+    }
 }

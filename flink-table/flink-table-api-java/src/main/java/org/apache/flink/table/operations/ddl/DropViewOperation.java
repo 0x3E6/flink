@@ -18,6 +18,8 @@
 
 package org.apache.flink.table.operations.ddl;
 
+import org.apache.flink.table.api.internal.TableResultImpl;
+import org.apache.flink.table.api.internal.TableResultInternal;
 import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.operations.Operation;
 import org.apache.flink.table.operations.OperationUtils;
@@ -26,44 +28,50 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/**
- * Operation to describe a DROP VIEW statement.
- */
+/** Operation to describe a DROP VIEW statement. */
 public class DropViewOperation implements DropOperation {
 
-	private final ObjectIdentifier viewIdentifier;
-	private final boolean ifExists;
-	private final boolean isTemporary;
+    private final ObjectIdentifier viewIdentifier;
+    private final boolean ifExists;
+    private final boolean isTemporary;
 
-	public DropViewOperation(ObjectIdentifier viewIdentifier, boolean ifExists, boolean isTemporary) {
-		this.viewIdentifier = viewIdentifier;
-		this.ifExists = ifExists;
-		this.isTemporary = isTemporary;
-	}
+    public DropViewOperation(
+            ObjectIdentifier viewIdentifier, boolean ifExists, boolean isTemporary) {
+        this.viewIdentifier = viewIdentifier;
+        this.ifExists = ifExists;
+        this.isTemporary = isTemporary;
+    }
 
-	public ObjectIdentifier getViewIdentifier() {
-		return this.viewIdentifier;
-	}
+    public ObjectIdentifier getViewIdentifier() {
+        return this.viewIdentifier;
+    }
 
-	public boolean isIfExists() {
-		return this.ifExists;
-	}
+    public boolean isIfExists() {
+        return this.ifExists;
+    }
 
-	public boolean isTemporary() {
-		return this.isTemporary;
-	}
+    public boolean isTemporary() {
+        return this.isTemporary;
+    }
 
-	@Override
-	public String asSummaryString() {
-		Map<String, Object> params = new LinkedHashMap<>();
-		params.put("identifier", viewIdentifier);
-		params.put("ifExists", ifExists);
-		params.put("isTemporary", isTemporary);
+    @Override
+    public String asSummaryString() {
+        Map<String, Object> params = new LinkedHashMap<>();
+        params.put("identifier", viewIdentifier);
+        params.put("ifExists", ifExists);
+        params.put("isTemporary", isTemporary);
 
-		return OperationUtils.formatWithChildren(
-			"DROP VIEW",
-			params,
-			Collections.emptyList(),
-			Operation::asSummaryString);
-	}
+        return OperationUtils.formatWithChildren(
+                "DROP VIEW", params, Collections.emptyList(), Operation::asSummaryString);
+    }
+
+    @Override
+    public TableResultInternal execute(Context ctx) {
+        if (isTemporary()) {
+            ctx.getCatalogManager().dropTemporaryView(getViewIdentifier(), isIfExists());
+        } else {
+            ctx.getCatalogManager().dropView(getViewIdentifier(), isIfExists());
+        }
+        return TableResultImpl.TABLE_RESULT_OK;
+    }
 }

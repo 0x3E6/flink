@@ -25,114 +25,104 @@ import org.apache.flink.configuration.DeploymentOptions;
 
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.Options;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Collectors;
 
 import static org.apache.flink.configuration.ConfigOptions.key;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
+import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Unit tests for the {@link GenericCLI}.
- */
-public class GenericCLITest {
+/** Unit tests for the {@link GenericCLI}. */
+class GenericCLITest {
 
-	@Rule
-	public TemporaryFolder tmp = new TemporaryFolder();
+    @TempDir java.nio.file.Path tmp;
 
-	private Options testOptions;
+    private Options testOptions;
 
-	@Before
-	public void initOptions() {
-		testOptions = new Options();
+    @BeforeEach
+    void initOptions() {
+        testOptions = new Options();
 
-		final GenericCLI cliUnderTest = new GenericCLI(
-				new Configuration(),
-				tmp.getRoot().getAbsolutePath());
-		cliUnderTest.addGeneralOptions(testOptions);
-	}
+        final GenericCLI cliUnderTest =
+                new GenericCLI(new Configuration(), tmp.toAbsolutePath().toString());
+        cliUnderTest.addGeneralOptions(testOptions);
+    }
 
-	@Test
-	public void testExecutorInBaseConfigIsPickedUp() throws CliArgsException {
-		final String expectedExecutorName = "test-executor";
-		final Configuration loadedConfig = new Configuration();
-		loadedConfig.set(DeploymentOptions.TARGET, expectedExecutorName);
+    @Test
+    void isActiveWhenTargetOnlyInConfig() throws CliArgsException {
+        final String expectedExecutorName = "test-executor";
+        final Configuration loadedConfig = new Configuration();
+        loadedConfig.set(DeploymentOptions.TARGET, expectedExecutorName);
 
-		final GenericCLI cliUnderTest = new GenericCLI(
-				loadedConfig,
-				tmp.getRoot().getAbsolutePath());
-		final CommandLine emptyCommandLine = CliFrontendParser.parse(testOptions, new String[0], true);
+        final GenericCLI cliUnderTest =
+                new GenericCLI(loadedConfig, tmp.toAbsolutePath().toString());
+        final CommandLine emptyCommandLine =
+                CliFrontendParser.parse(testOptions, new String[0], true);
 
-		final Configuration configuration = cliUnderTest.applyCommandLineOptionsToConfiguration(emptyCommandLine);
-		assertEquals(expectedExecutorName, configuration.get(DeploymentOptions.TARGET));
-	}
+        assertThat(cliUnderTest.isActive(emptyCommandLine)).isTrue();
+    }
 
-	@Test
-	public void testWithPreexistingConfigurationInConstructor() throws CliArgsException {
-		final Configuration loadedConfig = new Configuration();
-		loadedConfig.setInteger(CoreOptions.DEFAULT_PARALLELISM, 2);
-		loadedConfig.setBoolean(DeploymentOptions.ATTACHED, false);
+    @Test
+    void testWithPreexistingConfigurationInConstructor() throws CliArgsException {
+        final Configuration loadedConfig = new Configuration();
+        loadedConfig.setInteger(CoreOptions.DEFAULT_PARALLELISM, 2);
+        loadedConfig.setBoolean(DeploymentOptions.ATTACHED, false);
 
-		final ConfigOption<List<Integer>> listOption = key("test.list")
-				.intType()
-				.asList()
-				.noDefaultValue();
+        final ConfigOption<List<Integer>> listOption =
+                key("test.list").intType().asList().noDefaultValue();
 
-		final List<Integer> listValue = Arrays.asList(41, 42, 23);
-		final String encodedListValue = listValue
-				.stream()
-				.map(Object::toString)
-				.collect(Collectors.joining(";"));
+        final List<Integer> listValue = Arrays.asList(41, 42, 23);
+        final String encodedListValue =
+                listValue.stream().map(Object::toString).collect(Collectors.joining(";"));
 
-		final String[] args = {
-				"-e", "test-executor",
-				"-D" + listOption.key() + "=" + encodedListValue,
-				"-D" + CoreOptions.DEFAULT_PARALLELISM.key() + "=5"
-		};
+        final String[] args = {
+            "-e",
+            "test-executor",
+            "-D" + listOption.key() + "=" + encodedListValue,
+            "-D" + CoreOptions.DEFAULT_PARALLELISM.key() + "=5"
+        };
 
-		final GenericCLI cliUnderTest = new GenericCLI(
-				loadedConfig,
-				tmp.getRoot().getAbsolutePath());
-		final CommandLine commandLine = CliFrontendParser.parse(testOptions, args, true);
+        final GenericCLI cliUnderTest =
+                new GenericCLI(loadedConfig, tmp.toAbsolutePath().toString());
+        final CommandLine commandLine = CliFrontendParser.parse(testOptions, args, true);
 
-		final Configuration configuration = cliUnderTest.applyCommandLineOptionsToConfiguration(commandLine);
+        final Configuration configuration = cliUnderTest.toConfiguration(commandLine);
 
-		assertEquals("test-executor", configuration.getString(DeploymentOptions.TARGET));
-		assertEquals(5, configuration.getInteger(CoreOptions.DEFAULT_PARALLELISM));
-		assertFalse(configuration.getBoolean(DeploymentOptions.ATTACHED));
-		assertEquals(listValue, configuration.get(listOption));
-	}
+        assertThat(configuration.getString(DeploymentOptions.TARGET)).isEqualTo("test-executor");
+        assertThat(configuration.getInteger(CoreOptions.DEFAULT_PARALLELISM)).isEqualTo(5);
+        assertThat(configuration.getBoolean(DeploymentOptions.ATTACHED)).isFalse();
+        assertThat(configuration.get(listOption)).isEqualTo(listValue);
+    }
 
-	@Test
-	public void testIsActiveLong() throws CliArgsException {
-		testIsActiveHelper("--executor");
-	}
+    @Test
+    void testIsActiveLong() throws CliArgsException {
+        testIsActiveHelper("--executor");
+    }
 
-	@Test
-	public void testIsActiveShort() throws CliArgsException {
-		testIsActiveHelper("-e");
-	}
+    @Test
+    void testIsActiveShort() throws CliArgsException {
+        testIsActiveHelper("-e");
+    }
 
-	private void testIsActiveHelper(final String executorOption) throws CliArgsException {
-		final String expectedExecutorName = "test-executor";
-		final ConfigOption<Integer> configOption = key("test.int").intType().noDefaultValue();
-		final int expectedValue = 42;
+    private void testIsActiveHelper(final String executorOption) throws CliArgsException {
+        final String expectedExecutorName = "test-executor";
+        final ConfigOption<Integer> configOption = key("test.int").intType().noDefaultValue();
+        final int expectedValue = 42;
 
-		final GenericCLI cliUnderTest = new GenericCLI(
-				new Configuration(),
-				tmp.getRoot().getAbsolutePath());
+        final GenericCLI cliUnderTest =
+                new GenericCLI(new Configuration(), tmp.toAbsolutePath().toString());
 
-		final String[] args = {executorOption, expectedExecutorName, "-D" + configOption.key() + "=" + expectedValue};
-		final CommandLine commandLine = CliFrontendParser.parse(testOptions, args, true);
+        final String[] args = {
+            executorOption, expectedExecutorName, "-D" + configOption.key() + "=" + expectedValue
+        };
+        final CommandLine commandLine = CliFrontendParser.parse(testOptions, args, true);
 
-		final Configuration configuration = cliUnderTest.applyCommandLineOptionsToConfiguration(commandLine);
-		assertEquals(expectedExecutorName, configuration.get(DeploymentOptions.TARGET));
-		assertEquals(expectedValue, configuration.getInteger(configOption));
-	}
+        final Configuration configuration = cliUnderTest.toConfiguration(commandLine);
+        assertThat(configuration.get(DeploymentOptions.TARGET)).isEqualTo(expectedExecutorName);
+        assertThat(configuration.getInteger(configOption)).isEqualTo(expectedValue);
+    }
 }

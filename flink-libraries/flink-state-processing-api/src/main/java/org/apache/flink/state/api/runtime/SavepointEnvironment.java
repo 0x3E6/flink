@@ -25,14 +25,18 @@ import org.apache.flink.api.common.TaskInfo;
 import org.apache.flink.api.common.functions.RuntimeContext;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ConfigurationUtils;
+import org.apache.flink.configuration.StateChangelogOptionsInternal;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.runtime.accumulators.AccumulatorRegistry;
 import org.apache.flink.runtime.broadcast.BroadcastVariableManager;
+import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.CheckpointMetrics;
 import org.apache.flink.runtime.checkpoint.PrioritizedOperatorSubtaskState;
 import org.apache.flink.runtime.checkpoint.TaskStateSnapshot;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriteRequestExecutorFactory;
 import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
+import org.apache.flink.runtime.executiongraph.ExecutionGraphID;
 import org.apache.flink.runtime.externalresource.ExternalResourceInfoProvider;
 import org.apache.flink.runtime.io.disk.iomanager.IOManager;
 import org.apache.flink.runtime.io.disk.iomanager.IOManagerAsync;
@@ -44,21 +48,29 @@ import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.jobgraph.tasks.InputSplitProvider;
 import org.apache.flink.runtime.jobgraph.tasks.TaskOperatorEventGateway;
 import org.apache.flink.runtime.memory.MemoryManager;
+import org.apache.flink.runtime.memory.SharedResources;
 import org.apache.flink.runtime.metrics.groups.TaskMetricGroup;
 import org.apache.flink.runtime.metrics.groups.UnregisteredMetricGroups;
+import org.apache.flink.runtime.operators.coordination.CoordinationRequest;
+import org.apache.flink.runtime.operators.coordination.CoordinationResponse;
 import org.apache.flink.runtime.operators.coordination.OperatorEvent;
 import org.apache.flink.runtime.query.KvStateRegistry;
 import org.apache.flink.runtime.query.TaskKvStateRegistry;
+import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
 import org.apache.flink.runtime.state.TaskStateManager;
 import org.apache.flink.runtime.taskexecutor.GlobalAggregateManager;
 import org.apache.flink.runtime.taskmanager.TaskManagerRuntimeInfo;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.SerializedValue;
+import org.apache.flink.util.UserCodeClassLoader;
 
 import java.util.Collections;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
+
+import static org.apache.flink.runtime.memory.MemoryManager.DEFAULT_PAGE_SIZE;
 
 /**
  * A minimally implemented {@link Environment} that provides the functionality required to run the
@@ -66,264 +78,332 @@ import java.util.concurrent.Future;
  */
 @Internal
 public class SavepointEnvironment implements Environment {
-	private static final String ERROR_MSG = "This method should never be called";
+    private static final String ERROR_MSG = "This method should never be called";
 
-	private final JobID jobID;
+    private final JobID jobID;
 
-	private final JobVertexID vertexID;
+    private final JobVertexID vertexID;
 
-	private final ExecutionAttemptID attemptID;
+    private final ExecutionAttemptID attemptID;
 
-	private final RuntimeContext ctx;
+    private final RuntimeContext ctx;
 
-	private final Configuration configuration;
+    private final Configuration configuration;
 
-	private final int maxParallelism;
+    private final int maxParallelism;
 
-	private final int indexOfSubtask;
+    private final int indexOfSubtask;
 
-	private final TaskKvStateRegistry registry;
+    private final TaskKvStateRegistry registry;
 
-	private final TaskStateManager taskStateManager;
+    private final TaskStateManager taskStateManager;
 
-	private final IOManager ioManager;
+    private final IOManager ioManager;
 
-	private final MemoryManager memoryManager;
+    private final MemoryManager memoryManager;
 
-	private final AccumulatorRegistry accumulatorRegistry;
+    private final SharedResources sharedResources;
 
-	private SavepointEnvironment(RuntimeContext ctx, Configuration configuration, int maxParallelism, int indexOfSubtask, PrioritizedOperatorSubtaskState prioritizedOperatorSubtaskState) {
-		this.jobID = new JobID();
-		this.vertexID = new JobVertexID();
-		this.attemptID = new ExecutionAttemptID();
-		this.ctx = Preconditions.checkNotNull(ctx);
-		this.configuration = Preconditions.checkNotNull(configuration);
+    private final AccumulatorRegistry accumulatorRegistry;
 
-		Preconditions.checkArgument(maxParallelism > 0 && indexOfSubtask < maxParallelism);
-		this.maxParallelism = maxParallelism;
-		this.indexOfSubtask = indexOfSubtask;
+    private final UserCodeClassLoader userCodeClassLoader;
 
-		this.registry = new KvStateRegistry().createTaskRegistry(jobID, vertexID);
-		this.taskStateManager = new SavepointTaskStateManager(prioritizedOperatorSubtaskState);
-		this.ioManager = new IOManagerAsync(ConfigurationUtils.parseTempDirectories(configuration));
-		this.memoryManager = MemoryManager.forDefaultPageSize(64 * 1024 * 1024);
-		this.accumulatorRegistry = new AccumulatorRegistry(jobID, attemptID);
-	}
+    private final ChannelStateWriteRequestExecutorFactory channelStateExecutorFactory;
 
-	@Override
-	public ExecutionConfig getExecutionConfig() {
-		return ctx.getExecutionConfig();
-	}
+    private SavepointEnvironment(
+            RuntimeContext ctx,
+            Configuration configuration,
+            int maxParallelism,
+            int indexOfSubtask,
+            PrioritizedOperatorSubtaskState prioritizedOperatorSubtaskState) {
+        this.jobID = new JobID();
+        this.vertexID = new JobVertexID();
+        this.attemptID =
+                new ExecutionAttemptID(
+                        new ExecutionGraphID(), new ExecutionVertexID(vertexID, indexOfSubtask), 0);
+        this.ctx = Preconditions.checkNotNull(ctx);
+        this.configuration = Preconditions.checkNotNull(configuration);
 
-	@Override
-	public JobID getJobID() {
-		return jobID;
-	}
+        Preconditions.checkArgument(maxParallelism > 0 && indexOfSubtask < maxParallelism);
+        this.maxParallelism = maxParallelism;
+        this.indexOfSubtask = indexOfSubtask;
 
-	@Override
-	public JobVertexID getJobVertexId() {
-		return vertexID;
-	}
+        this.registry = new KvStateRegistry().createTaskRegistry(jobID, vertexID);
+        this.taskStateManager = new SavepointTaskStateManager(prioritizedOperatorSubtaskState);
+        this.ioManager = new IOManagerAsync(ConfigurationUtils.parseTempDirectories(configuration));
+        this.memoryManager = MemoryManager.create(64 * 1024 * 1024, DEFAULT_PAGE_SIZE);
+        this.sharedResources = new SharedResources();
+        this.accumulatorRegistry = new AccumulatorRegistry(jobID, attemptID);
 
-	@Override
-	public ExecutionAttemptID getExecutionId() {
-		return attemptID;
-	}
+        this.userCodeClassLoader = UserCodeClassLoaderRuntimeContextAdapter.from(ctx);
+        this.channelStateExecutorFactory = new ChannelStateWriteRequestExecutorFactory(jobID);
+    }
 
-	@Override
-	public Configuration getTaskConfiguration() {
-		return configuration;
-	}
+    @Override
+    public ExecutionConfig getExecutionConfig() {
+        return ctx.getExecutionConfig();
+    }
 
-	@Override
-	public TaskManagerRuntimeInfo getTaskManagerInfo() {
-		return new SavepointTaskManagerRuntimeInfo(getIOManager());
-	}
+    @Override
+    public JobID getJobID() {
+        return jobID;
+    }
 
-	@Override
-	public TaskMetricGroup getMetricGroup() {
-		return UnregisteredMetricGroups.createUnregisteredTaskMetricGroup();
-	}
+    @Override
+    public JobVertexID getJobVertexId() {
+        return vertexID;
+    }
 
-	@Override
-	public Configuration getJobConfiguration() {
-		throw new UnsupportedOperationException(ERROR_MSG);
-	}
+    @Override
+    public ExecutionAttemptID getExecutionId() {
+        return attemptID;
+    }
 
-	@Override
-	public TaskInfo getTaskInfo() {
-		return new TaskInfo(
-			ctx.getTaskName(),
-			maxParallelism,
-			indexOfSubtask,
-			ctx.getNumberOfParallelSubtasks(),
-			ctx.getAttemptNumber());
-	}
+    @Override
+    public Configuration getTaskConfiguration() {
+        return configuration;
+    }
 
-	@Override
-	public InputSplitProvider getInputSplitProvider() {
-		throw new UnsupportedOperationException(ERROR_MSG);
-	}
+    @Override
+    public TaskManagerRuntimeInfo getTaskManagerInfo() {
+        return new SavepointTaskManagerRuntimeInfo(getIOManager().getSpillingDirectories()[0]);
+    }
 
-	@Override
-	public IOManager getIOManager() {
-		return ioManager;
-	}
+    @Override
+    public TaskMetricGroup getMetricGroup() {
+        return UnregisteredMetricGroups.createUnregisteredTaskMetricGroup();
+    }
 
-	@Override
-	public MemoryManager getMemoryManager() {
-		return memoryManager;
-	}
+    @Override
+    public Configuration getJobConfiguration() {
+        Configuration jobConfiguration = new Configuration();
+        // This means leaving this stateBackend unwrapped.
+        jobConfiguration.setBoolean(
+                StateChangelogOptionsInternal.ENABLE_CHANGE_LOG_FOR_APPLICATION, false);
+        return jobConfiguration;
+    }
 
-	@Override
-	public ClassLoader getUserClassLoader() {
-		return ctx.getUserCodeClassLoader();
-	}
+    @Override
+    public TaskInfo getTaskInfo() {
+        return new TaskInfo(
+                ctx.getTaskName(),
+                maxParallelism,
+                indexOfSubtask,
+                ctx.getNumberOfParallelSubtasks(),
+                ctx.getAttemptNumber());
+    }
 
-	@Override
-	public Map<String, Future<Path>> getDistributedCacheEntries() {
-		return Collections.emptyMap();
-	}
+    @Override
+    public InputSplitProvider getInputSplitProvider() {
+        throw new UnsupportedOperationException(ERROR_MSG);
+    }
 
-	@Override
-	public BroadcastVariableManager getBroadcastVariableManager() {
-		throw new UnsupportedOperationException(ERROR_MSG);
-	}
+    @Override
+    public IOManager getIOManager() {
+        return ioManager;
+    }
 
-	@Override
-	public TaskStateManager getTaskStateManager() {
-		return taskStateManager;
-	}
+    @Override
+    public MemoryManager getMemoryManager() {
+        return memoryManager;
+    }
 
-	@Override
-	public GlobalAggregateManager getGlobalAggregateManager() {
-		throw new UnsupportedOperationException(ERROR_MSG);
-	}
+    @Override
+    public SharedResources getSharedResources() {
+        return sharedResources;
+    }
 
-	@Override
-	public ExternalResourceInfoProvider getExternalResourceInfoProvider() {
-		// We will still construct a StreamingRuntimeContext from this SavepointEnvironment at the moment. So, throwing
-		// Exception here would cause issue. When there is a bounded DataStream API, this class would be removed.
-		return ExternalResourceInfoProvider.NO_EXTERNAL_RESOURCES;
-	}
+    @Override
+    public UserCodeClassLoader getUserCodeClassLoader() {
+        return userCodeClassLoader;
+    }
 
-	@Override
-	public AccumulatorRegistry getAccumulatorRegistry() {
-		return accumulatorRegistry;
-	}
+    @Override
+    public Map<String, Future<Path>> getDistributedCacheEntries() {
+        return Collections.emptyMap();
+    }
 
-	@Override
-	public TaskKvStateRegistry getTaskKvStateRegistry() {
-		return registry;
-	}
+    @Override
+    public BroadcastVariableManager getBroadcastVariableManager() {
+        throw new UnsupportedOperationException(ERROR_MSG);
+    }
 
-	@Override
-	public void acknowledgeCheckpoint(long checkpointId, CheckpointMetrics checkpointMetrics) {
-		throw new UnsupportedOperationException(ERROR_MSG);
-	}
+    @Override
+    public TaskStateManager getTaskStateManager() {
+        return taskStateManager;
+    }
 
-	@Override
-	public void acknowledgeCheckpoint(long checkpointId, CheckpointMetrics checkpointMetrics, TaskStateSnapshot subtaskState) {
-		throw new UnsupportedOperationException(ERROR_MSG);
-	}
+    @Override
+    public GlobalAggregateManager getGlobalAggregateManager() {
+        throw new UnsupportedOperationException(ERROR_MSG);
+    }
 
-	@Override
-	public void declineCheckpoint(long checkpointId, Throwable cause) {
-		throw new UnsupportedOperationException(ERROR_MSG);
-	}
+    @Override
+    public ExternalResourceInfoProvider getExternalResourceInfoProvider() {
+        // We will still construct a StreamingRuntimeContext from this SavepointEnvironment at the
+        // moment. So, throwing
+        // Exception here would cause issue. When there is a bounded DataStream API, this class
+        // would be removed.
+        return ExternalResourceInfoProvider.NO_EXTERNAL_RESOURCES;
+    }
 
-	@Override
-	public TaskOperatorEventGateway getOperatorCoordinatorEventGateway() {
-		return new NoOpTaskOperatorEventGateway();
-	}
+    @Override
+    public AccumulatorRegistry getAccumulatorRegistry() {
+        return accumulatorRegistry;
+    }
 
-	@Override
-	public void failExternally(Throwable cause) {
-		ExceptionUtils.rethrow(cause);
-	}
+    @Override
+    public TaskKvStateRegistry getTaskKvStateRegistry() {
+        return registry;
+    }
 
-	@Override
-	public ResultPartitionWriter getWriter(int index) {
-		throw new UnsupportedOperationException(ERROR_MSG);
-	}
+    @Override
+    public void acknowledgeCheckpoint(long checkpointId, CheckpointMetrics checkpointMetrics) {
+        throw new UnsupportedOperationException(ERROR_MSG);
+    }
 
-	@Override
-	public ResultPartitionWriter[] getAllWriters() {
-		return new ResultPartitionWriter[0];
-	}
+    @Override
+    public void acknowledgeCheckpoint(
+            long checkpointId,
+            CheckpointMetrics checkpointMetrics,
+            TaskStateSnapshot subtaskState) {
+        throw new UnsupportedOperationException(ERROR_MSG);
+    }
 
-	@Override
-	public IndexedInputGate getInputGate(int index) {
-		throw new UnsupportedOperationException(ERROR_MSG);
-	}
+    @Override
+    public void declineCheckpoint(long checkpointId, CheckpointException checkpointException) {
+        throw new UnsupportedOperationException(ERROR_MSG);
+    }
 
-	@Override
-	public IndexedInputGate[] getAllInputGates() {
-		return new IndexedInputGate[0];
-	}
+    @Override
+    public TaskOperatorEventGateway getOperatorCoordinatorEventGateway() {
+        return new NoOpTaskOperatorEventGateway();
+    }
 
-	@Override
-	public TaskEventDispatcher getTaskEventDispatcher() {
-		throw new UnsupportedOperationException(ERROR_MSG);
-	}
+    @Override
+    public void failExternally(Throwable cause) {
+        ExceptionUtils.rethrow(cause);
+    }
 
-	/**
-	 * {@link SavepointEnvironment} builder.
-	 */
-	public static class Builder {
-		private RuntimeContext ctx;
+    @Override
+    public ResultPartitionWriter getWriter(int index) {
+        throw new UnsupportedOperationException(ERROR_MSG);
+    }
 
-		private Configuration configuration;
+    @Override
+    public ResultPartitionWriter[] getAllWriters() {
+        return new ResultPartitionWriter[0];
+    }
 
-		private int maxParallelism;
+    @Override
+    public IndexedInputGate getInputGate(int index) {
+        throw new UnsupportedOperationException(ERROR_MSG);
+    }
 
-		private int indexOfSubtask;
+    @Override
+    public IndexedInputGate[] getAllInputGates() {
+        return new IndexedInputGate[0];
+    }
 
-		private PrioritizedOperatorSubtaskState prioritizedOperatorSubtaskState;
+    @Override
+    public TaskEventDispatcher getTaskEventDispatcher() {
+        throw new UnsupportedOperationException(ERROR_MSG);
+    }
 
-		public Builder(RuntimeContext ctx, int maxParallelism) {
-			this.ctx = Preconditions.checkNotNull(ctx);
+    @Override
+    public ChannelStateWriteRequestExecutorFactory getChannelStateExecutorFactory() {
+        return channelStateExecutorFactory;
+    }
 
-			Preconditions.checkArgument(maxParallelism > 0);
-			this.maxParallelism = maxParallelism;
+    /** {@link SavepointEnvironment} builder. */
+    public static class Builder {
+        private RuntimeContext ctx;
 
-			this.prioritizedOperatorSubtaskState = PrioritizedOperatorSubtaskState.emptyNotRestored();
-			this.configuration = new Configuration();
-			this.indexOfSubtask = ctx.getIndexOfThisSubtask();
-		}
+        private Configuration configuration;
 
-		public Builder setSubtaskIndex(int indexOfSubtask) {
-			this.indexOfSubtask = indexOfSubtask;
-			return this;
-		}
+        private int maxParallelism;
 
-		public Builder setConfiguration(Configuration configuration) {
-			this.configuration = configuration;
-			return this;
-		}
+        private int indexOfSubtask;
 
-		public Builder setPrioritizedOperatorSubtaskState(PrioritizedOperatorSubtaskState prioritizedOperatorSubtaskState) {
-			this.prioritizedOperatorSubtaskState = prioritizedOperatorSubtaskState;
-			return this;
-		}
+        private PrioritizedOperatorSubtaskState prioritizedOperatorSubtaskState;
 
-		public SavepointEnvironment build() {
-			return new SavepointEnvironment(
-				ctx,
-				configuration,
-				maxParallelism,
-				indexOfSubtask,
-				prioritizedOperatorSubtaskState);
-		}
-	}
+        public Builder(RuntimeContext ctx, int maxParallelism) {
+            this.ctx = Preconditions.checkNotNull(ctx);
 
-	// ------------------------------------------------------------------------
-	//  mocks / stand-ins
-	// ------------------------------------------------------------------------
+            Preconditions.checkArgument(maxParallelism > 0);
+            this.maxParallelism = maxParallelism;
 
-	private static final class NoOpTaskOperatorEventGateway implements TaskOperatorEventGateway {
-		@Override
-		public void sendOperatorEventToCoordinator(OperatorID operator, SerializedValue<OperatorEvent> event) {}
-	}
+            this.prioritizedOperatorSubtaskState =
+                    PrioritizedOperatorSubtaskState.emptyNotRestored();
+            this.configuration = new Configuration();
+            this.indexOfSubtask = ctx.getIndexOfThisSubtask();
+        }
+
+        public Builder setSubtaskIndex(int indexOfSubtask) {
+            this.indexOfSubtask = indexOfSubtask;
+            return this;
+        }
+
+        public Builder setConfiguration(Configuration configuration) {
+            this.configuration = configuration;
+            return this;
+        }
+
+        public Builder setPrioritizedOperatorSubtaskState(
+                PrioritizedOperatorSubtaskState prioritizedOperatorSubtaskState) {
+            this.prioritizedOperatorSubtaskState = prioritizedOperatorSubtaskState;
+            return this;
+        }
+
+        public SavepointEnvironment build() {
+            return new SavepointEnvironment(
+                    ctx,
+                    configuration,
+                    maxParallelism,
+                    indexOfSubtask,
+                    prioritizedOperatorSubtaskState);
+        }
+    }
+
+    private static final class UserCodeClassLoaderRuntimeContextAdapter
+            implements UserCodeClassLoader {
+
+        private final RuntimeContext runtimeContext;
+
+        private UserCodeClassLoaderRuntimeContextAdapter(RuntimeContext runtimeContext) {
+            this.runtimeContext = runtimeContext;
+        }
+
+        @Override
+        public ClassLoader asClassLoader() {
+            return runtimeContext.getUserCodeClassLoader();
+        }
+
+        @Override
+        public void registerReleaseHookIfAbsent(String releaseHookName, Runnable releaseHook) {
+            runtimeContext.registerUserCodeClassLoaderReleaseHookIfAbsent(
+                    releaseHookName, releaseHook);
+        }
+
+        private static UserCodeClassLoaderRuntimeContextAdapter from(
+                RuntimeContext runtimeContext) {
+            return new UserCodeClassLoaderRuntimeContextAdapter(runtimeContext);
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    //  mocks / stand-ins
+    // ------------------------------------------------------------------------
+
+    private static final class NoOpTaskOperatorEventGateway implements TaskOperatorEventGateway {
+        @Override
+        public void sendOperatorEventToCoordinator(
+                OperatorID operator, SerializedValue<OperatorEvent> event) {}
+
+        @Override
+        public CompletableFuture<CoordinationResponse> sendRequestToCoordinator(
+                OperatorID operator, SerializedValue<CoordinationRequest> request) {
+            return CompletableFuture.completedFuture(null);
+        }
+    }
 }
-

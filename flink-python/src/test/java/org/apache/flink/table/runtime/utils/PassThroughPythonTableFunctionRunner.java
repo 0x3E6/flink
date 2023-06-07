@@ -18,63 +18,84 @@
 
 package org.apache.flink.table.runtime.utils;
 
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.fnexecution.v1.FlinkFnApi;
-import org.apache.flink.python.env.PythonEnvironmentManager;
-import org.apache.flink.python.metric.FlinkMetricContainer;
-import org.apache.flink.table.runtime.runners.python.beam.BeamPythonStatelessFunctionRunner;
+import org.apache.flink.python.env.process.ProcessPythonEnvironmentManager;
+import org.apache.flink.python.metric.process.FlinkMetricContainer;
+import org.apache.flink.table.runtime.runners.python.beam.BeamTablePythonFunctionRunner;
 import org.apache.flink.table.types.logical.RowType;
 
 import org.apache.beam.runners.fnexecution.control.JobBundleFactory;
-import org.apache.beam.vendor.grpc.v1p21p0.com.google.protobuf.Struct;
+import org.apache.beam.vendor.grpc.v1p48p1.com.google.protobuf.Struct;
 
 import java.util.LinkedList;
 import java.util.List;
-import java.util.Map;
+import java.util.stream.Collectors;
+
+import static org.apache.flink.python.Constants.OUTPUT_COLLECTION_ID;
+import static org.apache.flink.python.util.ProtoUtils.createFlattenRowTypeCoderInfoDescriptorProto;
 
 /**
- * A BeamPythonStatelessFunctionRunner that emit each input element in inner join and emit null in
- * left join when certain test conditions are met.
+ * A {@link BeamTablePythonFunctionRunner} that emit each input element in inner join and emit null
+ * in left join when certain test conditions are met.
  */
-public class PassThroughPythonTableFunctionRunner extends BeamPythonStatelessFunctionRunner {
+public class PassThroughPythonTableFunctionRunner extends BeamTablePythonFunctionRunner {
 
-	private int num = 0;
+    private int num = 0;
 
-	private final List<byte[]> buffer;
+    private final List<byte[]> buffer;
 
-	public PassThroughPythonTableFunctionRunner(
-		String taskName,
-		PythonEnvironmentManager environmentManager,
-		RowType inputType,
-		RowType outputType,
-		String functionUrn,
-		FlinkFnApi.UserDefinedFunctions userDefinedFunctions,
-		String coderUrn, Map<String, String> jobOptions,
-		FlinkMetricContainer flinkMetricContainer) {
-		super(taskName, environmentManager, inputType, outputType, functionUrn, userDefinedFunctions, coderUrn, jobOptions, flinkMetricContainer);
-		this.buffer = new LinkedList<>();
-	}
+    public PassThroughPythonTableFunctionRunner(
+            String taskName,
+            ProcessPythonEnvironmentManager environmentManager,
+            RowType inputType,
+            RowType outputType,
+            String functionUrn,
+            FlinkFnApi.UserDefinedFunctions userDefinedFunctions,
+            FlinkMetricContainer flinkMetricContainer) {
+        super(
+                taskName,
+                environmentManager,
+                functionUrn,
+                userDefinedFunctions,
+                flinkMetricContainer,
+                null,
+                null,
+                null,
+                null,
+                0.0,
+                createFlattenRowTypeCoderInfoDescriptorProto(
+                        inputType, FlinkFnApi.CoderInfoDescriptor.Mode.MULTIPLE, true),
+                createFlattenRowTypeCoderInfoDescriptorProto(
+                        outputType, FlinkFnApi.CoderInfoDescriptor.Mode.MULTIPLE, true));
+        this.buffer = new LinkedList<>();
+    }
 
-	@Override
-	protected void startBundle() {
-		super.startBundle();
-		this.mainInputReceiver = input -> {
-			this.num++;
-			if (num != 6 && num != 8) {
-				this.buffer.add(input.getValue());
-			}
-			this.buffer.add(new byte[]{0});
-		};
-	}
+    @Override
+    protected void startBundle() {
+        super.startBundle();
+        this.mainInputReceiver =
+                input -> {
+                    this.num++;
+                    if (num != 6 && num != 8) {
+                        this.buffer.add(input.getValue());
+                    }
+                    this.buffer.add(new byte[] {0});
+                };
+    }
 
-	@Override
-	public void flush() throws Exception {
-		super.flush();
-		resultBuffer.addAll(buffer);
-		buffer.clear();
-	}
+    @Override
+    public void flush() throws Exception {
+        super.flush();
+        resultBuffer.addAll(
+                buffer.stream()
+                        .map(b -> Tuple2.of(OUTPUT_COLLECTION_ID, b))
+                        .collect(Collectors.toList()));
+        buffer.clear();
+    }
 
-	@Override
-	public JobBundleFactory createJobBundleFactory(Struct pipelineOptions) {
-		return PythonTestUtils.createMockJobBundleFactory();
-	}
+    @Override
+    public JobBundleFactory createJobBundleFactory(Struct pipelineOptions) {
+        return PythonTestUtils.createMockJobBundleFactory();
+    }
 }

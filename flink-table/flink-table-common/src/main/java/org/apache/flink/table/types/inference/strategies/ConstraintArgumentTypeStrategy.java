@@ -28,61 +28,53 @@ import org.apache.flink.table.types.inference.Signature.Argument;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.function.Function;
+import java.util.function.Predicate;
 
-/**
- * Strategy for an argument that must fulfill a given constraint.
- */
+/** Strategy for an argument that must fulfill a given constraint. */
 @Internal
 public final class ConstraintArgumentTypeStrategy implements ArgumentTypeStrategy {
 
-	private final String constraintMessage;
+    private final String constraintMessage;
 
-	private final Function<List<DataType>, Boolean> evaluator;
+    private final Predicate<List<DataType>> evaluator;
 
-	public ConstraintArgumentTypeStrategy(
-			String constraintMessage,
-			Function<List<DataType>, Boolean> evaluator) {
-		this.constraintMessage = constraintMessage;
-		this.evaluator = evaluator;
-	}
+    public ConstraintArgumentTypeStrategy(
+            String constraintMessage, Predicate<List<DataType>> evaluator) {
+        this.constraintMessage = constraintMessage;
+        this.evaluator = evaluator;
+    }
 
-	@Override
-	public Optional<DataType> inferArgumentType(CallContext callContext, int argumentPos, boolean throwOnFailure) {
-		final List<DataType> actualDataTypes = callContext.getArgumentDataTypes();
+    @Override
+    public Optional<DataType> inferArgumentType(
+            CallContext callContext, int argumentPos, boolean throwOnFailure) {
+        final List<DataType> actualDataTypes = callContext.getArgumentDataTypes();
 
-		// type fulfills constraint
-		if (evaluator.apply(actualDataTypes)) {
-			return Optional.of(actualDataTypes.get(argumentPos));
-		}
+        // type fulfills constraint
+        if (evaluator.test(actualDataTypes)) {
+            return Optional.of(actualDataTypes.get(argumentPos));
+        }
+        return callContext.fail(throwOnFailure, constraintMessage, actualDataTypes.toArray());
+    }
 
-		if (throwOnFailure) {
-			throw callContext.newValidationError(
-				constraintMessage,
-				actualDataTypes.toArray());
-		}
-		return Optional.empty();
-	}
+    @Override
+    public Argument getExpectedArgument(FunctionDefinition functionDefinition, int argumentPos) {
+        return Argument.ofGroup("CONSTRAINT");
+    }
 
-	@Override
-	public Argument getExpectedArgument(FunctionDefinition functionDefinition, int argumentPos) {
-		return Argument.of("<CONSTRAINT>");
-	}
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+        ConstraintArgumentTypeStrategy that = (ConstraintArgumentTypeStrategy) o;
+        return constraintMessage.equals(that.constraintMessage) && evaluator.equals(that.evaluator);
+    }
 
-	@Override
-	public boolean equals(Object o) {
-		if (this == o) {
-			return true;
-		}
-		if (o == null || getClass() != o.getClass()) {
-			return false;
-		}
-		ConstraintArgumentTypeStrategy that = (ConstraintArgumentTypeStrategy) o;
-		return constraintMessage.equals(that.constraintMessage) && evaluator.equals(that.evaluator);
-	}
-
-	@Override
-	public int hashCode() {
-		return Objects.hash(constraintMessage, evaluator);
-	}
+    @Override
+    public int hashCode() {
+        return Objects.hash(constraintMessage, evaluator);
+    }
 }

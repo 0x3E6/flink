@@ -18,7 +18,8 @@
 
 package org.apache.flink.runtime.scheduler;
 
-import org.apache.flink.runtime.executiongraph.Execution;
+import org.apache.flink.runtime.executiongraph.ExecutionVertex;
+import org.apache.flink.runtime.scheduler.strategy.ConsumedPartitionGroup;
 import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
 import org.apache.flink.runtime.taskmanager.TaskManagerLocation;
 
@@ -26,24 +27,33 @@ import java.util.Collection;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
-/**
- * Component to retrieve the inputs locations of a {@link Execution}.
- */
+/** Component to retrieve the inputs locations of an {@link ExecutionVertex}. */
 public interface InputsLocationsRetriever {
 
-	/**
-	 * Get the producers of the result partitions consumed by an execution.
-	 *
-	 * @param executionVertexId identifies the execution
-	 * @return the producers of the result partitions group by job vertex id
-	 */
-	Collection<Collection<ExecutionVertexID>> getConsumedResultPartitionsProducers(ExecutionVertexID executionVertexId);
+    /**
+     * Get the consumed result partition groups of an execution vertex.
+     *
+     * @param executionVertexId identifies the execution vertex
+     * @return the consumed result partition groups
+     */
+    Collection<ConsumedPartitionGroup> getConsumedPartitionGroups(
+            ExecutionVertexID executionVertexId);
 
-	/**
-	 * Get the task manager location future for an execution.
-	 *
-	 * @param executionVertexId identifying the execution
-	 * @return the task manager location future
-	 */
-	Optional<CompletableFuture<TaskManagerLocation>> getTaskManagerLocation(ExecutionVertexID executionVertexId);
+    /**
+     * Get the producer execution vertices of a consumed result partition group.
+     *
+     * @param consumedPartitionGroup the consumed result partition group
+     * @return the ids of producer execution vertices
+     */
+    Collection<ExecutionVertexID> getProducersOfConsumedPartitionGroup(
+            ConsumedPartitionGroup consumedPartitionGroup);
+
+    /**
+     * Get the task manager location future for an execution vertex.
+     *
+     * @param executionVertexId identifying the execution vertex
+     * @return the task manager location future
+     */
+    Optional<CompletableFuture<TaskManagerLocation>> getTaskManagerLocation(
+            ExecutionVertexID executionVertexId);
 }

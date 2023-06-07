@@ -18,84 +18,88 @@
 
 package org.apache.flink.runtime.io.network.netty;
 
+import org.apache.flink.shaded.netty4.io.netty.buffer.ByteBuf;
+
+import org.junit.After;
 import org.junit.Test;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
-/**
- * Tests for the {@link NettyBufferPool} wrapper.
- */
+/** Tests for the {@link NettyBufferPool} wrapper. */
 public class NettyBufferPoolTest {
 
-	@Test
-	public void testNoHeapAllocations() throws Exception {
-		NettyBufferPool nettyBufferPool = new NettyBufferPool(1);
+    private final List<ByteBuf> needReleasing = new ArrayList<>();
 
-		// Buffers should prefer to be direct
-		assertTrue(nettyBufferPool.buffer().isDirect());
-		assertTrue(nettyBufferPool.buffer(128).isDirect());
-		assertTrue(nettyBufferPool.buffer(128, 256).isDirect());
+    @After
+    public void tearDown() {
+        try {
+            // Release all of the buffers.
+            for (ByteBuf buf : needReleasing) {
+                buf.release();
+            }
 
-		// IO buffers should prefer to be direct
-		assertTrue(nettyBufferPool.ioBuffer().isDirect());
-		assertTrue(nettyBufferPool.ioBuffer(128).isDirect());
-		assertTrue(nettyBufferPool.ioBuffer(128, 256).isDirect());
+            // Checks in a separate loop in case we have sliced buffers.
+            for (ByteBuf buf : needReleasing) {
+                assertEquals(0, buf.refCnt());
+            }
+        } finally {
+            needReleasing.clear();
+        }
+    }
 
-		// Disallow heap buffers
-		try {
-			nettyBufferPool.heapBuffer();
-			fail("Unexpected heap buffer operation");
-		} catch (UnsupportedOperationException ignored) {
-		}
+    @Test
+    public void testNoHeapAllocations() throws Exception {
+        final NettyBufferPool nettyBufferPool = new NettyBufferPool(1);
 
-		try {
-			nettyBufferPool.heapBuffer(128);
-			fail("Unexpected heap buffer operation");
-		} catch (UnsupportedOperationException ignored) {
-		}
+        // Buffers should prefer to be direct
+        assertTrue(releaseLater(nettyBufferPool.buffer()).isDirect());
+        assertTrue(releaseLater(nettyBufferPool.buffer(128)).isDirect());
+        assertTrue(releaseLater(nettyBufferPool.buffer(128, 256)).isDirect());
 
-		try {
-			nettyBufferPool.heapBuffer(128, 256);
-			fail("Unexpected heap buffer operation");
-		} catch (UnsupportedOperationException ignored) {
-		}
+        // IO buffers should prefer to be direct
+        assertTrue(releaseLater(nettyBufferPool.ioBuffer()).isDirect());
+        assertTrue(releaseLater(nettyBufferPool.ioBuffer(128)).isDirect());
+        assertTrue(releaseLater(nettyBufferPool.ioBuffer(128, 256)).isDirect());
 
-		// Disallow composite heap buffers
-		try {
-			nettyBufferPool.compositeHeapBuffer();
-			fail("Unexpected heap buffer operation");
-		} catch (UnsupportedOperationException ignored) {
-		}
+        // Currently we fakes the heap buffer allocation with direct buffers
+        assertTrue(releaseLater(nettyBufferPool.heapBuffer()).isDirect());
+        assertTrue(releaseLater(nettyBufferPool.heapBuffer(128)).isDirect());
+        assertTrue(releaseLater(nettyBufferPool.heapBuffer(128, 256)).isDirect());
 
-		try {
-			nettyBufferPool.compositeHeapBuffer(2);
-			fail("Unexpected heap buffer operation");
-		} catch (UnsupportedOperationException ignored) {
-		}
+        // Composite buffers allocates the corresponding type of buffers when extending its capacity
+        assertTrue(releaseLater(nettyBufferPool.compositeHeapBuffer()).capacity(1024).isDirect());
+        assertTrue(releaseLater(nettyBufferPool.compositeHeapBuffer(10)).capacity(1024).isDirect());
 
-		// Is direct buffer pooled!
-		assertTrue(nettyBufferPool.isDirectBufferPooled());
-	}
+        // Is direct buffer pooled!
+        assertTrue(nettyBufferPool.isDirectBufferPooled());
+    }
 
-	@Test
-	public void testAllocationsStatistics() throws Exception {
-		NettyBufferPool nettyBufferPool = new NettyBufferPool(1);
-		int chunkSize = nettyBufferPool.getChunkSize();
+    @Test
+    public void testAllocationsStatistics() throws Exception {
+        NettyBufferPool nettyBufferPool = new NettyBufferPool(1);
+        int chunkSize = nettyBufferPool.getChunkSize();
 
-		{
-			// Single large buffer allocates one chunk
-			nettyBufferPool.directBuffer(chunkSize - 64);
-			long allocated = nettyBufferPool.getNumberOfAllocatedBytes().get();
-			assertEquals(chunkSize, allocated);
-		}
+        {
+            // Single large buffer allocates one chunk
+            releaseLater(nettyBufferPool.directBuffer(chunkSize - 64));
+            long allocated = nettyBufferPool.getNumberOfAllocatedBytes().get();
+            assertEquals(chunkSize, allocated);
+        }
 
-		{
-			// Allocate a little more (one more chunk required)
-			nettyBufferPool.directBuffer(128);
-			long allocated = nettyBufferPool.getNumberOfAllocatedBytes().get();
-			assertEquals(2 * chunkSize, allocated);
-		}
-	}
+        {
+            // Allocate a little more (one more chunk required)
+            releaseLater(nettyBufferPool.directBuffer(128));
+            long allocated = nettyBufferPool.getNumberOfAllocatedBytes().get();
+            assertEquals(2 * chunkSize, allocated);
+        }
+    }
+
+    private ByteBuf releaseLater(ByteBuf buf) {
+        needReleasing.add(buf);
+        return buf;
+    }
 }

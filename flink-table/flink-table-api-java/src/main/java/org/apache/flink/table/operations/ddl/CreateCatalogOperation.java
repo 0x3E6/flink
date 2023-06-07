@@ -18,6 +18,12 @@
 
 package org.apache.flink.table.operations.ddl;
 
+import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.api.internal.TableResultImpl;
+import org.apache.flink.table.api.internal.TableResultInternal;
+import org.apache.flink.table.catalog.Catalog;
+import org.apache.flink.table.catalog.exceptions.CatalogException;
+import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.operations.Operation;
 import org.apache.flink.table.operations.OperationUtils;
 
@@ -27,36 +33,50 @@ import java.util.Map;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
-/**
- * Operation to describe a CREATE CATALOG statement.
- */
+/** Operation to describe a CREATE CATALOG statement. */
 public class CreateCatalogOperation implements CreateOperation {
-	private final String catalogName;
-	private final Map<String, String> properties;
+    private final String catalogName;
+    private final Map<String, String> properties;
 
-	public CreateCatalogOperation(String catalogName, Map<String, String> properties) {
-		this.catalogName = checkNotNull(catalogName);
-		this.properties = checkNotNull(properties);
-	}
+    public CreateCatalogOperation(String catalogName, Map<String, String> properties) {
+        this.catalogName = checkNotNull(catalogName);
+        this.properties = Collections.unmodifiableMap(checkNotNull(properties));
+    }
 
-	public String getCatalogName() {
-		return catalogName;
-	}
+    public String getCatalogName() {
+        return catalogName;
+    }
 
-	public Map<String, String> getProperties() {
-		return Collections.unmodifiableMap(properties);
-	}
+    public Map<String, String> getProperties() {
+        return properties;
+    }
 
-	@Override
-	public String asSummaryString() {
-		Map<String, Object> params = new LinkedHashMap<>();
-		params.put("catalogName", catalogName);
-		params.put("properties", properties);
+    @Override
+    public String asSummaryString() {
+        Map<String, Object> params = new LinkedHashMap<>();
+        params.put("catalogName", catalogName);
+        params.put("properties", properties);
 
-		return OperationUtils.formatWithChildren(
-			"CREATE CATALOG",
-			params,
-			Collections.emptyList(),
-			Operation::asSummaryString);
-	}
+        return OperationUtils.formatWithChildren(
+                "CREATE CATALOG", params, Collections.emptyList(), Operation::asSummaryString);
+    }
+
+    @Override
+    public TableResultInternal execute(Context ctx) {
+        try {
+
+            Catalog catalog =
+                    FactoryUtil.createCatalog(
+                            catalogName,
+                            properties,
+                            ctx.getTableConfig(),
+                            ctx.getResourceManager().getUserClassLoader());
+            ctx.getCatalogManager().registerCatalog(catalogName, catalog);
+
+            return TableResultImpl.TABLE_RESULT_OK;
+        } catch (CatalogException e) {
+            throw new ValidationException(
+                    String.format("Could not execute %s", asSummaryString()), e);
+        }
+    }
 }

@@ -18,32 +18,30 @@
 
 package org.apache.flink.contrib.streaming.state;
 
-import org.junit.Rule;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.rocksdb.ColumnFamilyHandle;
 import org.rocksdb.RocksDB;
 import org.rocksdb.RocksDBException;
 
+/** Validate RocksDB properties. */
+class RocksDBPropertyTest {
 
-/**
- * Validate RocksDB properties.
- */
-public class RocksDBPropertyTest {
+    @RegisterExtension public RocksDBExtension rocksDBExtension = new RocksDBExtension();
 
-	@Rule
-	public RocksDBResource rocksDBResource = new RocksDBResource();
+    @Test
+    void testRocksDBPropertiesValid() {
+        RocksDB db = rocksDBExtension.getRocksDB();
+        ColumnFamilyHandle handle = rocksDBExtension.getDefaultColumnFamily();
 
-	@Test
-	public void testRocksDBPropertiesValid() throws RocksDBException {
-		RocksDB db = rocksDBResource.getRocksDB();
-		ColumnFamilyHandle handle = rocksDBResource.getDefaultColumnFamily();
-
-		for (RocksDBProperty property : RocksDBProperty.values()) {
-			try {
-				db.getLongProperty(handle, property.getRocksDBProperty());
-			} catch (RocksDBException e) {
-				throw new AssertionError(String.format("Invalid RocksDB property %s", property.getRocksDBProperty()), e);
-			}
-		}
-	}
+        for (RocksDBProperty property : RocksDBProperty.values()) {
+            try {
+                db.getLongProperty(handle, property.getRocksDBProperty());
+            } catch (RocksDBException e) {
+                throw new AssertionError(
+                        String.format("Invalid RocksDB property %s", property.getRocksDBProperty()),
+                        e);
+            }
+        }
+    }
 }

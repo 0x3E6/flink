@@ -23,15 +23,18 @@ import org.apache.flink.table.planner.runtime.stream.sql.StreamFileSystemITCaseB
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * ITCase to test csv format for {@link CsvFileSystemFormatFactory} in stream mode.
- */
-public class CsvFilesystemStreamITCase extends StreamFileSystemITCaseBase {
+/** ITCase to test csv format for {@link CsvFileFormatFactory} in stream mode. */
+class CsvFilesystemStreamITCase extends StreamFileSystemITCaseBase {
 
-	@Override
-	public String[] formatProperties() {
-		List<String> ret = new ArrayList<>();
-		ret.add("'format'='csv'");
-		return ret.toArray(new String[0]);
-	}
+    @Override
+    public boolean supportsReadingMetadata() {
+        return false;
+    }
+
+    @Override
+    public String[] formatProperties() {
+        List<String> ret = new ArrayList<>();
+        ret.add("'format'='csv'");
+        return ret.toArray(new String[0]);
+    }
 }

@@ -18,6 +18,10 @@
 
 package org.apache.flink.table.operations.ddl;
 
+import org.apache.flink.table.api.TableException;
+import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.api.internal.TableResultImpl;
+import org.apache.flink.table.api.internal.TableResultInternal;
 import org.apache.flink.table.operations.Operation;
 import org.apache.flink.table.operations.OperationUtils;
 
@@ -25,39 +29,46 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/**
- *  Operation to describe a DROP FUNCTION statement for temporary
- *  system function.
- */
+/** Operation to describe a DROP FUNCTION statement for temporary system function. */
 public class DropTempSystemFunctionOperation implements DropOperation {
-	private final String functionName;
-	private final boolean ifExists;
+    private final String functionName;
+    private final boolean ifExists;
 
-	public DropTempSystemFunctionOperation(
-		String functionName,
-		boolean ifExists) {
-		this.functionName = functionName;
-		this.ifExists = ifExists;
-	}
+    public DropTempSystemFunctionOperation(String functionName, boolean ifExists) {
+        this.functionName = functionName;
+        this.ifExists = ifExists;
+    }
 
-	public String getFunctionName() {
-		return functionName;
-	}
+    public String getFunctionName() {
+        return functionName;
+    }
 
-	public boolean isIfExists() {
-		return ifExists;
-	}
+    public boolean isIfExists() {
+        return ifExists;
+    }
 
-	@Override
-	public String asSummaryString() {
-		Map<String, Object> params = new LinkedHashMap<>();
-		params.put("functionName", functionName);
-		params.put("ifExists", ifExists);
+    @Override
+    public String asSummaryString() {
+        Map<String, Object> params = new LinkedHashMap<>();
+        params.put("functionName", functionName);
+        params.put("ifExists", ifExists);
 
-		return OperationUtils.formatWithChildren(
-			"DROP TEMPORARY SYSTEM FUNCTION",
-			params,
-			Collections.emptyList(),
-			Operation::asSummaryString);
-	}
+        return OperationUtils.formatWithChildren(
+                "DROP TEMPORARY SYSTEM FUNCTION",
+                params,
+                Collections.emptyList(),
+                Operation::asSummaryString);
+    }
+
+    @Override
+    public TableResultInternal execute(Context ctx) {
+        try {
+            ctx.getFunctionCatalog().dropTemporarySystemFunction(getFunctionName(), isIfExists());
+            return TableResultImpl.TABLE_RESULT_OK;
+        } catch (ValidationException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new TableException(String.format("Could not execute %s", asSummaryString()), e);
+        }
+    }
 }

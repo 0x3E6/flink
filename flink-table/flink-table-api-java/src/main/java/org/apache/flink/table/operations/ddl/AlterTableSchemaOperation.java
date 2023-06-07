@@ -18,29 +18,42 @@
 
 package org.apache.flink.table.operations.ddl;
 
+import org.apache.flink.table.api.internal.TableResultImpl;
+import org.apache.flink.table.api.internal.TableResultInternal;
 import org.apache.flink.table.catalog.CatalogTable;
 import org.apache.flink.table.catalog.ObjectIdentifier;
 
-/**
- * Operation to describe altering the schema of a table.
- */
+/** Operation to describe altering the schema of a table. */
 public class AlterTableSchemaOperation extends AlterTableOperation {
 
-	// the CatalogTable with the updated schema
-	private final CatalogTable catalogTable;
+    // the CatalogTable with the updated schema
+    private final CatalogTable catalogTable;
 
-	public AlterTableSchemaOperation(ObjectIdentifier tableIdentifier, CatalogTable catalogTable) {
-		super(tableIdentifier);
-		this.catalogTable = catalogTable;
-	}
+    public AlterTableSchemaOperation(
+            ObjectIdentifier tableIdentifier,
+            CatalogTable catalogTable,
+            boolean ignoreIfNotExists) {
+        super(tableIdentifier, ignoreIfNotExists);
+        this.catalogTable = catalogTable;
+    }
 
-	public CatalogTable getCatalogTable() {
-		return catalogTable;
-	}
+    public CatalogTable getCatalogTable() {
+        return catalogTable;
+    }
 
-	@Override
-	public String asSummaryString() {
-		return String.format("ALTER TABLE %s SET SCHEMA %s",
-				tableIdentifier.asSummaryString(), catalogTable.getSchema().toString());
-	}
+    @Override
+    public String asSummaryString() {
+        return String.format(
+                "ALTER TABLE %s%s SET SCHEMA %s",
+                ignoreIfTableNotExists ? "IF EXISTS " : "",
+                tableIdentifier.asSummaryString(),
+                catalogTable.getUnresolvedSchema().toString());
+    }
+
+    @Override
+    public TableResultInternal execute(Context ctx) {
+        ctx.getCatalogManager()
+                .alterTable(getCatalogTable(), getTableIdentifier(), ignoreIfTableNotExists());
+        return TableResultImpl.TABLE_RESULT_OK;
+    }
 }

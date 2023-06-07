@@ -19,8 +19,11 @@
 
 package org.apache.flink.runtime.scheduler.adapter;
 
+import org.apache.flink.runtime.jobgraph.IntermediateResultPartitionID;
+import org.apache.flink.runtime.scheduler.strategy.ConsumedPartitionGroup;
 import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
 import org.apache.flink.runtime.scheduler.strategy.SchedulingPipelinedRegion;
+import org.apache.flink.runtime.scheduler.strategy.SchedulingResultPartition;
 import org.apache.flink.util.Preconditions;
 
 import java.util.Collections;
@@ -28,58 +31,95 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 
-/**
- * Default implementation of {@link SchedulingPipelinedRegion}.
- */
+import static org.apache.flink.util.Preconditions.checkNotNull;
+
+/** Default implementation of {@link SchedulingPipelinedRegion}. */
 public class DefaultSchedulingPipelinedRegion implements SchedulingPipelinedRegion {
 
-	private final Map<ExecutionVertexID, DefaultExecutionVertex> executionVertices;
+    private final Map<ExecutionVertexID, DefaultExecutionVertex> executionVertices;
 
-	private Set<DefaultResultPartition> consumedResults;
+    private Set<ConsumedPartitionGroup> nonPipelinedConsumedPartitionGroups;
 
-	public DefaultSchedulingPipelinedRegion(Set<DefaultExecutionVertex> defaultExecutionVertices) {
-		Preconditions.checkNotNull(defaultExecutionVertices);
+    private Set<ConsumedPartitionGroup> releaseBySchedulerConsumedPartitionGroups;
 
-		this.executionVertices = new HashMap<>();
-		for (DefaultExecutionVertex executionVertex : defaultExecutionVertices) {
-			this.executionVertices.put(executionVertex.getId(), executionVertex);
-		}
-	}
+    private final Function<IntermediateResultPartitionID, DefaultResultPartition>
+            resultPartitionRetriever;
 
-	@Override
-	public Iterable<DefaultExecutionVertex> getVertices() {
-		return Collections.unmodifiableCollection(executionVertices.values());
-	}
+    public DefaultSchedulingPipelinedRegion(
+            Set<DefaultExecutionVertex> defaultExecutionVertices,
+            Function<IntermediateResultPartitionID, DefaultResultPartition>
+                    resultPartitionRetriever) {
 
-	@Override
-	public DefaultExecutionVertex getVertex(final ExecutionVertexID vertexId) {
-		final DefaultExecutionVertex executionVertex = executionVertices.get(vertexId);
-		if (executionVertex == null) {
-			throw new IllegalArgumentException(String.format(
-				"Execution vertex %s not found in pipelined region",
-				vertexId));
-		}
-		return executionVertex;
-	}
+        Preconditions.checkNotNull(defaultExecutionVertices);
 
-	@Override
-	public Iterable<DefaultResultPartition> getConsumedResults() {
-		if (consumedResults == null) {
-			initializeConsumedResults();
-		}
-		return consumedResults;
-	}
+        this.executionVertices = new HashMap<>();
+        for (DefaultExecutionVertex executionVertex : defaultExecutionVertices) {
+            this.executionVertices.put(executionVertex.getId(), executionVertex);
+        }
 
-	private void initializeConsumedResults() {
-		final Set<DefaultResultPartition> consumedResults = new HashSet<>();
-		for (DefaultExecutionVertex executionVertex : executionVertices.values()) {
-			for (DefaultResultPartition resultPartition : executionVertex.getConsumedResults()) {
-				if (!executionVertices.containsKey(resultPartition.getProducer().getId())) {
-					consumedResults.add(resultPartition);
-				}
-			}
-		}
-		this.consumedResults = Collections.unmodifiableSet(consumedResults);
-	}
+        this.resultPartitionRetriever = checkNotNull(resultPartitionRetriever);
+    }
+
+    @Override
+    public Iterable<DefaultExecutionVertex> getVertices() {
+        return Collections.unmodifiableCollection(executionVertices.values());
+    }
+
+    @Override
+    public DefaultExecutionVertex getVertex(final ExecutionVertexID vertexId) {
+        final DefaultExecutionVertex executionVertex = executionVertices.get(vertexId);
+        if (executionVertex == null) {
+            throw new IllegalArgumentException(
+                    String.format("Execution vertex %s not found in pipelined region", vertexId));
+        }
+        return executionVertex;
+    }
+
+    private void initializeConsumedPartitionGroups() {
+        final Set<ConsumedPartitionGroup> nonPipelinedConsumedPartitionGroupSet = new HashSet<>();
+        final Set<ConsumedPartitionGroup> releaseBySchedulerConsumedPartitionGroupSet =
+                new HashSet<>();
+        for (DefaultExecutionVertex executionVertex : executionVertices.values()) {
+            for (ConsumedPartitionGroup consumedPartitionGroup :
+                    executionVertex.getConsumedPartitionGroups()) {
+                SchedulingResultPartition consumedPartition =
+                        resultPartitionRetriever.apply(consumedPartitionGroup.getFirst());
+
+                if (!consumedPartition.getResultType().mustBePipelinedConsumed()) {
+                    nonPipelinedConsumedPartitionGroupSet.add(consumedPartitionGroup);
+                }
+                if (consumedPartition.getResultType().isReleaseByScheduler()) {
+                    releaseBySchedulerConsumedPartitionGroupSet.add(consumedPartitionGroup);
+                }
+            }
+        }
+
+        this.nonPipelinedConsumedPartitionGroups =
+                Collections.unmodifiableSet(nonPipelinedConsumedPartitionGroupSet);
+        this.releaseBySchedulerConsumedPartitionGroups =
+                Collections.unmodifiableSet(releaseBySchedulerConsumedPartitionGroupSet);
+    }
+
+    @Override
+    public Iterable<ConsumedPartitionGroup> getAllNonPipelinedConsumedPartitionGroups() {
+        if (nonPipelinedConsumedPartitionGroups == null) {
+            initializeConsumedPartitionGroups();
+        }
+        return nonPipelinedConsumedPartitionGroups;
+    }
+
+    @Override
+    public Iterable<ConsumedPartitionGroup> getAllReleaseBySchedulerConsumedPartitionGroups() {
+        if (releaseBySchedulerConsumedPartitionGroups == null) {
+            initializeConsumedPartitionGroups();
+        }
+        return releaseBySchedulerConsumedPartitionGroups;
+    }
+
+    @Override
+    public boolean contains(final ExecutionVertexID vertexId) {
+        return executionVertices.containsKey(vertexId);
+    }
 }

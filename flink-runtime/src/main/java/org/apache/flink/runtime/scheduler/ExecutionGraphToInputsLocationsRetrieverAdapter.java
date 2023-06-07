@@ -19,69 +19,70 @@
 package org.apache.flink.runtime.scheduler;
 
 import org.apache.flink.runtime.execution.ExecutionState;
-import org.apache.flink.runtime.executiongraph.ExecutionEdge;
 import org.apache.flink.runtime.executiongraph.ExecutionGraph;
 import org.apache.flink.runtime.executiongraph.ExecutionJobVertex;
 import org.apache.flink.runtime.executiongraph.ExecutionVertex;
+import org.apache.flink.runtime.scheduler.strategy.ConsumedPartitionGroup;
 import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
 import org.apache.flink.runtime.taskmanager.TaskManagerLocation;
+import org.apache.flink.util.IterableUtils;
 
-import java.util.ArrayList;
 import java.util.Collection;
-import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkState;
 
-/**
- * An implementation of {@link InputsLocationsRetriever} based on the {@link ExecutionGraph}.
- */
+/** An implementation of {@link InputsLocationsRetriever} based on the {@link ExecutionGraph}. */
 public class ExecutionGraphToInputsLocationsRetrieverAdapter implements InputsLocationsRetriever {
 
-	private final ExecutionGraph executionGraph;
+    private final ExecutionGraph executionGraph;
 
-	public ExecutionGraphToInputsLocationsRetrieverAdapter(ExecutionGraph executionGraph) {
-		this.executionGraph = checkNotNull(executionGraph);
-	}
+    public ExecutionGraphToInputsLocationsRetrieverAdapter(ExecutionGraph executionGraph) {
+        this.executionGraph = checkNotNull(executionGraph);
+    }
 
-	@Override
-	public Collection<Collection<ExecutionVertexID>> getConsumedResultPartitionsProducers(
-			ExecutionVertexID executionVertexId) {
-		ExecutionVertex ev = getExecutionVertex(executionVertexId);
+    @Override
+    public Collection<ConsumedPartitionGroup> getConsumedPartitionGroups(
+            ExecutionVertexID executionVertexId) {
+        return getExecutionVertex(executionVertexId).getAllConsumedPartitionGroups();
+    }
 
-		List<Collection<ExecutionVertexID>> resultPartitionProducers = new ArrayList<>(ev.getNumberOfInputs());
-		for (int i = 0; i < ev.getNumberOfInputs(); i++) {
-			ExecutionEdge[] inputEdges = ev.getInputEdges(i);
-			List<ExecutionVertexID> producers = new ArrayList<>(inputEdges.length);
-			for (ExecutionEdge inputEdge : inputEdges) {
-				ExecutionVertex producer = inputEdge.getSource().getProducer();
-				producers.add(producer.getID());
-			}
-			resultPartitionProducers.add(producers);
+    @Override
+    public Collection<ExecutionVertexID> getProducersOfConsumedPartitionGroup(
+            ConsumedPartitionGroup consumedPartitionGroup) {
+        return IterableUtils.toStream(consumedPartitionGroup)
+                .map(
+                        partition ->
+                                executionGraph
+                                        .getResultPartitionOrThrow(partition)
+                                        .getProducer()
+                                        .getID())
+                .collect(Collectors.toList());
+    }
 
-		}
-		return resultPartitionProducers;
-	}
+    @Override
+    public Optional<CompletableFuture<TaskManagerLocation>> getTaskManagerLocation(
+            ExecutionVertexID executionVertexId) {
+        ExecutionVertex ev = getExecutionVertex(executionVertexId);
 
-	@Override
-	public Optional<CompletableFuture<TaskManagerLocation>> getTaskManagerLocation(ExecutionVertexID executionVertexId) {
-		ExecutionVertex ev = getExecutionVertex(executionVertexId);
+        if (ev.getExecutionState() != ExecutionState.CREATED) {
+            return Optional.of(ev.getCurrentTaskManagerLocationFuture());
+        } else {
+            return Optional.empty();
+        }
+    }
 
-		if (ev.getExecutionState() != ExecutionState.CREATED) {
-			return Optional.of(ev.getCurrentTaskManagerLocationFuture());
-		} else {
-			return Optional.empty();
-		}
-	}
+    private ExecutionVertex getExecutionVertex(ExecutionVertexID executionVertexId) {
+        ExecutionJobVertex ejv = executionGraph.getJobVertex(executionVertexId.getJobVertexId());
 
-	private ExecutionVertex getExecutionVertex(ExecutionVertexID executionVertexId) {
-		ExecutionJobVertex ejv = executionGraph.getJobVertex(executionVertexId.getJobVertexId());
+        checkState(
+                ejv != null && ejv.getParallelism() > executionVertexId.getSubtaskIndex(),
+                "Failed to find execution %s in execution graph.",
+                executionVertexId);
 
-		checkState(ejv != null && ejv.getParallelism() > executionVertexId.getSubtaskIndex(),
-				"Failed to find execution %s in execution graph.", executionVertexId);
-
-		return ejv.getTaskVertices()[executionVertexId.getSubtaskIndex()];
-	}
+        return ejv.getTaskVertices()[executionVertexId.getSubtaskIndex()];
+    }
 }

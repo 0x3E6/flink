@@ -58,7 +58,7 @@ import java.util.regex.Pattern;
 
 import static org.apache.flink.runtime.rest.handler.util.HandlerRequestUtils.fromRequestBodyOrQueryParameter;
 import static org.apache.flink.runtime.rest.handler.util.HandlerRequestUtils.getQueryParameter;
-import static org.apache.flink.shaded.guava18.com.google.common.base.Strings.emptyToNull;
+import static org.apache.flink.shaded.guava30.com.google.common.base.Strings.emptyToNull;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
@@ -69,153 +69,207 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  */
 public class JarHandlerUtils {
 
-	/** Standard jar handler parameters parsed from request. */
-	public static class JarHandlerContext {
-		private final Path jarFile;
-		private final String entryClass;
-		private final List<String> programArgs;
-		private final int parallelism;
-		private final JobID jobId;
+    /** Standard jar handler parameters parsed from request. */
+    public static class JarHandlerContext {
+        private final Path jarFile;
+        private final String entryClass;
+        private final List<String> programArgs;
+        private final int parallelism;
+        private final JobID jobId;
 
-		private JarHandlerContext(Path jarFile, String entryClass, List<String> programArgs, int parallelism, JobID jobId) {
-			this.jarFile = jarFile;
-			this.entryClass = entryClass;
-			this.programArgs = programArgs;
-			this.parallelism = parallelism;
-			this.jobId = jobId;
-		}
+        private JarHandlerContext(
+                Path jarFile,
+                String entryClass,
+                List<String> programArgs,
+                int parallelism,
+                JobID jobId) {
+            this.jarFile = jarFile;
+            this.entryClass = entryClass;
+            this.programArgs = programArgs;
+            this.parallelism = parallelism;
+            this.jobId = jobId;
+        }
 
-		public static <R extends JarRequestBody> JarHandlerContext fromRequest(
-				@Nonnull final HandlerRequest<R, ?> request,
-				@Nonnull final Path jarDir,
-				@Nonnull final Logger log) throws RestHandlerException {
-			final JarRequestBody requestBody = request.getRequestBody();
+        public static <R extends JarRequestBody> JarHandlerContext fromRequest(
+                @Nonnull final HandlerRequest<R> request,
+                @Nonnull final Path jarDir,
+                @Nonnull final Logger log)
+                throws RestHandlerException {
+            final JarRequestBody requestBody = request.getRequestBody();
 
-			final String pathParameter = request.getPathParameter(JarIdPathParameter.class);
-			Path jarFile = jarDir.resolve(pathParameter);
+            Configuration configuration = requestBody.getFlinkConfiguration();
 
-			String entryClass = fromRequestBodyOrQueryParameter(
-				emptyToNull(requestBody.getEntryClassName()),
-				() -> emptyToNull(getQueryParameter(request, EntryClassQueryParameter.class)),
-				null,
-				log);
+            final String pathParameter = request.getPathParameter(JarIdPathParameter.class);
+            Path jarFile = jarDir.resolve(pathParameter);
 
-			List<String> programArgs = JarHandlerUtils.getProgramArgs(request, log);
+            String entryClass =
+                    fromRequestBodyOrQueryParameter(
+                            emptyToNull(requestBody.getEntryClassName()),
+                            () ->
+                                    emptyToNull(
+                                            getQueryParameter(
+                                                    request, EntryClassQueryParameter.class)),
+                            null,
+                            log);
 
-			int parallelism = fromRequestBodyOrQueryParameter(
-				requestBody.getParallelism(),
-				() -> getQueryParameter(request, ParallelismQueryParameter.class),
-				CoreOptions.DEFAULT_PARALLELISM.defaultValue(),
-				log);
+            List<String> programArgs = JarHandlerUtils.getProgramArgs(request, log);
 
-			JobID jobId = fromRequestBodyOrQueryParameter(
-				requestBody.getJobId(),
-				() -> null, // No support via query parameter
-				null, // Delegate default job ID to actual JobGraph generation
-				log);
+            int parallelism =
+                    fromRequestBodyOrQueryParameter(
+                            requestBody.getParallelism(),
+                            () -> getQueryParameter(request, ParallelismQueryParameter.class),
+                            configuration.get(CoreOptions.DEFAULT_PARALLELISM),
+                            log);
 
-			return new JarHandlerContext(jarFile, entryClass, programArgs, parallelism, jobId);
-		}
+            JobID jobId =
+                    fromRequestBodyOrQueryParameter(
+                            requestBody.getJobId(),
+                            () -> null, // No support via query parameter
+                            null, // Delegate default job ID to actual JobGraph generation
+                            log);
 
-		public void applyToConfiguration(final Configuration configuration) {
-			checkNotNull(configuration);
+            return new JarHandlerContext(jarFile, entryClass, programArgs, parallelism, jobId);
+        }
 
-			if (jobId != null) {
-				configuration.set(PipelineOptionsInternal.PIPELINE_FIXED_JOB_ID, jobId.toHexString());
-			}
-			configuration.set(CoreOptions.DEFAULT_PARALLELISM, parallelism);
+        public void applyToConfiguration(
+                final Configuration configuration,
+                final HandlerRequest<? extends JarRequestBody> request) {
+            checkNotNull(configuration);
+            checkNotNull(request);
 
-			final PackagedProgram program = toPackagedProgram(configuration);
-			ConfigUtils.encodeCollectionToConfig(configuration, PipelineOptions.JARS, program.getJobJarAndDependencies(), URL::toString);
-			ConfigUtils.encodeCollectionToConfig(configuration, PipelineOptions.CLASSPATHS, program.getClasspaths(), URL::toString);
-		}
+            Configuration restFlinkConfig = request.getRequestBody().getFlinkConfiguration();
+            configuration.addAll(restFlinkConfig);
 
-		public JobGraph toJobGraph(Configuration configuration, boolean suppressOutput) {
-			try {
-				final PackagedProgram packagedProgram = toPackagedProgram(configuration);
-				return PackagedProgramUtils.createJobGraph(packagedProgram, configuration, parallelism, jobId, suppressOutput);
-			} catch (final ProgramInvocationException e) {
-				throw new CompletionException(e);
-			}
-		}
+            if (jobId != null) {
+                configuration.set(
+                        PipelineOptionsInternal.PIPELINE_FIXED_JOB_ID, jobId.toHexString());
+            }
+            configuration.set(CoreOptions.DEFAULT_PARALLELISM, parallelism);
 
-		public PackagedProgram toPackagedProgram(Configuration configuration) {
-			checkNotNull(configuration);
+            final PackagedProgram program = toPackagedProgram(configuration);
+            ConfigUtils.encodeCollectionToConfig(
+                    configuration,
+                    PipelineOptions.JARS,
+                    program.getJobJarAndDependencies(),
+                    URL::toString);
+            ConfigUtils.encodeCollectionToConfig(
+                    configuration,
+                    PipelineOptions.CLASSPATHS,
+                    program.getClasspaths(),
+                    URL::toString);
+        }
 
-			if (!Files.exists(jarFile)) {
-				throw new CompletionException(new RestHandlerException(
-						String.format("Jar file %s does not exist", jarFile), HttpResponseStatus.BAD_REQUEST));
-			}
+        public JobGraph toJobGraph(
+                PackagedProgram packagedProgram,
+                Configuration configuration,
+                boolean suppressOutput) {
+            try {
+                return PackagedProgramUtils.createJobGraph(
+                        packagedProgram, configuration, parallelism, jobId, suppressOutput);
+            } catch (final ProgramInvocationException e) {
+                throw new CompletionException(e);
+            }
+        }
 
-			try {
-				return PackagedProgram.newBuilder()
-						.setJarFile(jarFile.toFile())
-						.setEntryPointClassName(entryClass)
-						.setConfiguration(configuration)
-						.setArguments(programArgs.toArray(new String[0]))
-						.build();
-			} catch (final ProgramInvocationException e) {
-				throw new CompletionException(e);
-			}
-		}
-	}
+        public PackagedProgram toPackagedProgram(Configuration configuration) {
+            checkNotNull(configuration);
 
-	/** Parse program arguments in jar run or plan request. */
-	private static <R extends JarRequestBody, M extends MessageParameters> List<String> getProgramArgs(
-			HandlerRequest<R, M> request, Logger log) throws RestHandlerException {
-		JarRequestBody requestBody = request.getRequestBody();
-		@SuppressWarnings("deprecation")
-		List<String> programArgs = tokenizeArguments(
-			fromRequestBodyOrQueryParameter(
-				emptyToNull(requestBody.getProgramArguments()),
-				() -> getQueryParameter(request, ProgramArgsQueryParameter.class),
-				null,
-				log));
-		List<String> programArgsList =
-			fromRequestBodyOrQueryParameter(
-				requestBody.getProgramArgumentsList(),
-				() -> request.getQueryParameter(ProgramArgQueryParameter.class),
-				null,
-				log);
-		if (!programArgsList.isEmpty()) {
-			if (!programArgs.isEmpty()) {
-				throw new RestHandlerException(
-					"Confusing request: programArgs and programArgsList are specified, please, use only programArgsList",
-					HttpResponseStatus.BAD_REQUEST);
-			}
-			return programArgsList;
-		} else {
-			return programArgs;
-		}
-	}
+            if (!Files.exists(jarFile)) {
+                throw new CompletionException(
+                        new RestHandlerException(
+                                String.format("Jar file %s does not exist", jarFile),
+                                HttpResponseStatus.BAD_REQUEST));
+            }
 
-	private static final Pattern ARGUMENTS_TOKENIZE_PATTERN = Pattern.compile("([^\"\']\\S*|\".+?\"|\'.+?\')\\s*");
+            try {
+                return PackagedProgram.newBuilder()
+                        .setJarFile(jarFile.toFile())
+                        .setEntryPointClassName(entryClass)
+                        .setConfiguration(configuration)
+                        .setArguments(programArgs.toArray(new String[0]))
+                        .build();
+            } catch (final ProgramInvocationException e) {
+                throw new CompletionException(e);
+            }
+        }
 
-	/**
-	 * Takes program arguments as a single string, and splits them into a list of string.
-	 *
-	 * <pre>
-	 * tokenizeArguments("--foo bar")            = ["--foo" "bar"]
-	 * tokenizeArguments("--foo \"bar baz\"")    = ["--foo" "bar baz"]
-	 * tokenizeArguments("--foo 'bar baz'")      = ["--foo" "bar baz"]
-	 * tokenizeArguments(null)                   = []
-	 * </pre>
-	 *
-	 * <strong>WARNING: </strong>This method does not respect escaped quotes.
-	 */
-	@VisibleForTesting
-	static List<String> tokenizeArguments(@Nullable final String args) {
-		if (args == null) {
-			return Collections.emptyList();
-		}
-		final Matcher matcher = ARGUMENTS_TOKENIZE_PATTERN.matcher(args);
-		final List<String> tokens = new ArrayList<>();
-		while (matcher.find()) {
-			tokens.add(matcher.group()
-				.trim()
-				.replace("\"", "")
-				.replace("\'", ""));
-		}
-		return tokens;
-	}
+        @VisibleForTesting
+        String getEntryClass() {
+            return entryClass;
+        }
+
+        @VisibleForTesting
+        List<String> getProgramArgs() {
+            return programArgs;
+        }
+
+        @VisibleForTesting
+        int getParallelism() {
+            return parallelism;
+        }
+
+        @VisibleForTesting
+        JobID getJobId() {
+            return jobId;
+        }
+    }
+
+    /** Parse program arguments in jar run or plan request. */
+    private static <R extends JarRequestBody, M extends MessageParameters>
+            List<String> getProgramArgs(HandlerRequest<R> request, Logger log)
+                    throws RestHandlerException {
+        JarRequestBody requestBody = request.getRequestBody();
+        @SuppressWarnings("deprecation")
+        List<String> programArgs =
+                tokenizeArguments(
+                        fromRequestBodyOrQueryParameter(
+                                emptyToNull(requestBody.getProgramArguments()),
+                                () -> getQueryParameter(request, ProgramArgsQueryParameter.class),
+                                null,
+                                log));
+        List<String> programArgsList =
+                fromRequestBodyOrQueryParameter(
+                        requestBody.getProgramArgumentsList(),
+                        () -> request.getQueryParameter(ProgramArgQueryParameter.class),
+                        null,
+                        log);
+        if (!programArgsList.isEmpty()) {
+            if (!programArgs.isEmpty()) {
+                throw new RestHandlerException(
+                        "Confusing request: programArgs and programArgsList are specified, please, use only programArgsList",
+                        HttpResponseStatus.BAD_REQUEST);
+            }
+            return programArgsList;
+        } else {
+            return programArgs;
+        }
+    }
+
+    private static final Pattern ARGUMENTS_TOKENIZE_PATTERN =
+            Pattern.compile("([^\"\']\\S*|\".+?\"|\'.+?\')\\s*");
+
+    /**
+     * Takes program arguments as a single string, and splits them into a list of string.
+     *
+     * <pre>
+     * tokenizeArguments("--foo bar")            = ["--foo" "bar"]
+     * tokenizeArguments("--foo \"bar baz\"")    = ["--foo" "bar baz"]
+     * tokenizeArguments("--foo 'bar baz'")      = ["--foo" "bar baz"]
+     * tokenizeArguments(null)                   = []
+     * </pre>
+     *
+     * <strong>WARNING: </strong>This method does not respect escaped quotes.
+     */
+    @VisibleForTesting
+    static List<String> tokenizeArguments(@Nullable final String args) {
+        if (args == null) {
+            return Collections.emptyList();
+        }
+        final Matcher matcher = ARGUMENTS_TOKENIZE_PATTERN.matcher(args);
+        final List<String> tokens = new ArrayList<>();
+        while (matcher.find()) {
+            tokens.add(matcher.group().trim().replace("\"", "").replace("\'", ""));
+        }
+        return tokens;
+    }
 }

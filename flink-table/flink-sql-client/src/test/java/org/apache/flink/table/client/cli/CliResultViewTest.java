@@ -17,240 +17,187 @@
 
 package org.apache.flink.table.client.cli;
 
-import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.table.api.TableResult;
-import org.apache.flink.table.api.TableSchema;
-import org.apache.flink.table.api.Types;
-import org.apache.flink.table.client.cli.utils.TerminalUtils;
-import org.apache.flink.table.client.config.Environment;
-import org.apache.flink.table.client.gateway.Executor;
-import org.apache.flink.table.client.gateway.ProgramTargetDescriptor;
+import org.apache.flink.api.common.RuntimeExecutionMode;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.table.api.DataTypes;
+import org.apache.flink.table.catalog.Column;
+import org.apache.flink.table.catalog.ResolvedSchema;
+import org.apache.flink.table.client.config.ResultMode;
 import org.apache.flink.table.client.gateway.ResultDescriptor;
-import org.apache.flink.table.client.gateway.SessionContext;
-import org.apache.flink.table.client.gateway.SqlExecutionException;
 import org.apache.flink.table.client.gateway.TypedResult;
-import org.apache.flink.table.delegation.Parser;
-import org.apache.flink.types.Row;
+import org.apache.flink.table.client.gateway.result.ChangelogResult;
+import org.apache.flink.table.client.gateway.result.MaterializedResult;
+import org.apache.flink.table.client.util.CliClientTestUtils;
+import org.apache.flink.table.data.GenericRowData;
+import org.apache.flink.table.data.RowData;
 
-import org.jline.utils.AttributedString;
-import org.junit.Test;
+import org.jline.terminal.Terminal;
+import org.junit.jupiter.api.Test;
 
-import java.io.File;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.assertTrue;
+import static org.apache.flink.configuration.ExecutionOptions.RUNTIME_MODE;
+import static org.apache.flink.table.client.config.SqlClientOptions.EXECUTION_RESULT_MODE;
+import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Contains basic tests for the {@link CliResultView}.
- */
-public class CliResultViewTest {
+/** Contains basic tests for the {@link CliResultView}. */
+class CliResultViewTest {
 
-	@Test
-	public void testTableResultViewKeepJobResult() throws Exception {
-		testResultViewClearResult(TypedResult.endOfStream(), true, 0);
-	}
+    @Test
+    void testTableResultViewKeepJobResult() throws Exception {
+        testResultViewClearResult(TypedResult.endOfStream(), true, 0);
+    }
 
-	@Test
-	public void testTableResultViewClearEmptyResult() throws Exception {
-		testResultViewClearResult(TypedResult.empty(), true, 1);
-	}
+    @Test
+    void testTableResultViewClearEmptyResult() throws Exception {
+        testResultViewClearResult(TypedResult.empty(), true, 1);
+    }
 
-	@Test
-	public void testTableResultViewClearPayloadResult() throws Exception {
-		testResultViewClearResult(TypedResult.payload(1), true, 1);
-	}
+    @Test
+    void testTableResultViewClearPayloadResult() throws Exception {
+        testResultViewClearResult(TypedResult.payload(1), true, 1);
+    }
 
-	@Test
-	public void testChangelogResultViewKeepJobResult() throws Exception {
-		testResultViewClearResult(TypedResult.endOfStream(), false, 0);
-	}
+    @Test
+    void testChangelogResultViewKeepJobResult() throws Exception {
+        testResultViewClearResult(TypedResult.endOfStream(), false, 0);
+    }
 
-	@Test
-	public void testChangelogResultViewClearEmptyResult() throws Exception {
-		testResultViewClearResult(TypedResult.empty(), false, 1);
-	}
+    @Test
+    void testChangelogResultViewClearEmptyResult() throws Exception {
+        testResultViewClearResult(TypedResult.empty(), false, 1);
+    }
 
-	@Test
-	public void testChangelogResultViewClearPayloadResult() throws Exception {
-		testResultViewClearResult(TypedResult.payload(Collections.emptyList()), false, 1);
-	}
+    @Test
+    void testChangelogResultViewClearPayloadResult() throws Exception {
+        testResultViewClearResult(TypedResult.payload(Collections.emptyList()), false, 1);
+    }
 
-	private void testResultViewClearResult(TypedResult<?> typedResult, boolean isTableMode, int expectedCancellationCount) throws Exception {
-		final CountDownLatch cancellationCounterLatch = new CountDownLatch(expectedCancellationCount);
-		final SessionContext session = new SessionContext("test-session", new Environment());
-		final MockExecutor executor = new MockExecutor(typedResult, cancellationCounterLatch);
-		String sessionId = executor.openSession(session);
-		final ResultDescriptor descriptor = new ResultDescriptor(
-				"result-id",
-				TableSchema.builder().field("Null Field", Types.STRING()).build(),
-				false,
-				false);
+    private void testResultViewClearResult(
+            TypedResult<?> typedResult, boolean isTableMode, int expectedCancellationCount)
+            throws Exception {
+        final CountDownLatch cancellationCounterLatch =
+                new CountDownLatch(expectedCancellationCount);
 
-		Thread resultViewRunner = null;
-		CliClient cli = null;
-		try {
-			cli = new CliClient(
-					TerminalUtils.createDummyTerminal(),
-					sessionId,
-					executor,
-					File.createTempFile("history", "tmp").toPath());
-			resultViewRunner = new Thread(new TestingCliResultView(cli, descriptor, isTableMode));
-			resultViewRunner.start();
-		} finally {
-			if (resultViewRunner != null && !resultViewRunner.isInterrupted()) {
-				resultViewRunner.interrupt();
-			}
-			if (cli != null) {
-				cli.close();
-			}
-		}
+        final Configuration testConfig = new Configuration();
+        testConfig.set(EXECUTION_RESULT_MODE, ResultMode.TABLE);
+        testConfig.set(RUNTIME_MODE, RuntimeExecutionMode.STREAMING);
+        ResolvedSchema schema =
+                ResolvedSchema.of(Column.physical("Null Field", DataTypes.STRING()));
+        final ResultDescriptor descriptor =
+                new ResultDescriptor(CliClientTestUtils.createTestClient(schema), testConfig);
 
-		assertTrue(
-			"Invalid number of cancellations.",
-			cancellationCounterLatch.await(10, TimeUnit.SECONDS));
-	}
+        try (Terminal terminal = TerminalUtils.createDumbTerminal()) {
+            Thread resultViewRunner =
+                    new Thread(
+                            new TestingCliResultView(
+                                    terminal,
+                                    descriptor,
+                                    isTableMode,
+                                    typedResult,
+                                    cancellationCounterLatch));
+            resultViewRunner.start();
 
-	private static final class MockExecutor implements Executor {
+            if (!resultViewRunner.isInterrupted()) {
+                resultViewRunner.interrupt();
+            }
+            // close the client until view exit
+            while (resultViewRunner.isAlive()) {
+                Thread.sleep(100);
+            }
+        }
 
-		private final TypedResult<?> typedResult;
-		private final CountDownLatch cancellationCounter;
+        assertThat(cancellationCounterLatch.await(10, TimeUnit.SECONDS))
+                .as("Invalid number of cancellations.")
+                .isTrue();
+    }
 
-		public MockExecutor(TypedResult<?> typedResult, CountDownLatch cancellationCounter) {
-			this.typedResult = typedResult;
-			this.cancellationCounter = cancellationCounter;
-		}
+    private static final class TestingCliResultView implements Runnable {
 
-		@Override
-		public void start() throws SqlExecutionException {
-			// do nothing
-		}
+        private final CliResultView<?> realResultView;
 
-		@Override
-		public String openSession(SessionContext session) throws SqlExecutionException {
-			return UUID.randomUUID().toString();
-		}
+        @SuppressWarnings("unchecked")
+        public TestingCliResultView(
+                Terminal terminal,
+                ResultDescriptor descriptor,
+                boolean isTableMode,
+                TypedResult<?> typedResult,
+                CountDownLatch cancellationCounterLatch) {
 
-		@Override
-		public void closeSession(String sessionId) throws SqlExecutionException {
-			// do nothing
-		}
+            if (isTableMode) {
+                realResultView =
+                        new CliTableResultView(
+                                terminal,
+                                descriptor,
+                                new TestMaterializedResult(
+                                        (TypedResult<Integer>) typedResult,
+                                        cancellationCounterLatch));
+            } else {
+                realResultView =
+                        new CliChangelogResultView(
+                                terminal,
+                                descriptor,
+                                new TestChangelogResult(
+                                        (TypedResult<List<RowData>>) typedResult,
+                                        cancellationCounterLatch));
+            }
+        }
 
-		@Override
-		public Map<String, String> getSessionProperties(String sessionId) throws SqlExecutionException {
-			return null;
-		}
+        @Override
+        public void run() {
+            realResultView.open();
+        }
+    }
 
-		@Override
-		public void resetSessionProperties(String sessionId) throws SqlExecutionException {
+    private static class TestMaterializedResult implements MaterializedResult {
 
-		}
+        private final CountDownLatch cancellationCounter;
+        private final TypedResult<Integer> typedResult;
 
-		@Override
-		public void setSessionProperty(String sessionId, String key, String value) throws SqlExecutionException {
+        public TestMaterializedResult(
+                TypedResult<Integer> typedResult, CountDownLatch cancellationCounterLatch) {
+            this.typedResult = typedResult;
+            this.cancellationCounter = cancellationCounterLatch;
+        }
 
-		}
+        @Override
+        public void close() {
+            cancellationCounter.countDown();
+        }
 
-		@Override
-		public TableResult executeSql(String sessionId, String statement) throws SqlExecutionException {
-			return null;
-		}
+        @Override
+        public TypedResult<Integer> snapshot(int pageSize) {
+            return typedResult;
+        }
 
-		@Override
-		public List<String> listModules(String sessionId) throws SqlExecutionException {
-			return null;
-		}
+        @Override
+        public List<RowData> retrievePage(int page) {
+            return Collections.singletonList(new GenericRowData(1));
+        }
+    }
 
-		@Override
-		public Parser getSqlParser(String sessionId) {
-			return null;
-		}
+    private static class TestChangelogResult implements ChangelogResult {
 
-		@Override
-		public List<String> completeStatement(String sessionId, String statement, int position) {
-			return null;
-		}
+        private final TypedResult<List<RowData>> typedResult;
+        private final CountDownLatch cancellationCounter;
 
-		@Override
-		public ResultDescriptor executeQuery(String sessionId, String query) throws SqlExecutionException {
-			return null;
-		}
+        public TestChangelogResult(
+                TypedResult<List<RowData>> typedResult, CountDownLatch cancellationCounter) {
+            this.typedResult = typedResult;
+            this.cancellationCounter = cancellationCounter;
+        }
 
-		@Override
-		@SuppressWarnings("unchecked")
-		public TypedResult<List<Tuple2<Boolean, Row>>> retrieveResultChanges(String sessionId, String resultId) throws SqlExecutionException {
-			return (TypedResult<List<Tuple2<Boolean, Row>>>) typedResult;
-		}
+        @Override
+        public TypedResult<List<RowData>> retrieveChanges() {
+            return typedResult;
+        }
 
-		@Override
-		@SuppressWarnings("unchecked")
-		public TypedResult<Integer> snapshotResult(String sessionId, String resultId, int pageSize) throws SqlExecutionException {
-			return (TypedResult<Integer>) typedResult;
-		}
-
-		@Override
-		public List<Row> retrieveResultPage(String resultId, int page) throws SqlExecutionException {
-			return Collections.singletonList(new Row(1));
-		}
-
-		@Override
-		public void cancelQuery(String sessionId, String resultId) throws SqlExecutionException {
-			cancellationCounter.countDown();
-		}
-
-		@Override
-		public ProgramTargetDescriptor executeUpdate(String sessionId, String statement) throws SqlExecutionException {
-			return null;
-		}
-	}
-
-	private static final class TestingCliResultView implements Runnable {
-
-		private final CliResultView realResultView;
-
-		public TestingCliResultView(
-			CliClient client,
-			ResultDescriptor descriptor,
-			boolean isTableMode) {
-
-			if (isTableMode) {
-				realResultView = new TestingCliTableResultView(client, descriptor);
-			} else {
-				realResultView = new TestingCliChangelogResultView(client, descriptor);
-			}
-		}
-
-		@Override
-		public void run() {
-			realResultView.open();
-		}
-	}
-
-	private static class TestingCliChangelogResultView extends CliChangelogResultView {
-
-		public TestingCliChangelogResultView(CliClient client, ResultDescriptor resultDescriptor) {
-			super(client, resultDescriptor);
-		}
-
-		@Override
-		protected List<AttributedString> computeMainHeaderLines() {
-			return Collections.emptyList();
-		}
-	}
-
-	private static class TestingCliTableResultView extends CliTableResultView {
-
-		public TestingCliTableResultView(CliClient client, ResultDescriptor resultDescriptor) {
-			super(client, resultDescriptor);
-		}
-
-		@Override
-		protected List<AttributedString> computeMainHeaderLines() {
-			return Collections.emptyList();
-		}
-	}
+        @Override
+        public void close() {
+            cancellationCounter.countDown();
+        }
+    }
 }

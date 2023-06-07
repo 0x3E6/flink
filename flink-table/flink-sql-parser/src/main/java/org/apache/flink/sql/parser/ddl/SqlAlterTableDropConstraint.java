@@ -26,40 +26,41 @@ import org.apache.calcite.util.ImmutableNullableList;
 
 import java.util.List;
 
-/**
- * ALTER TABLE [catalog_name.][db_name.]table_name DROP CONSTRAINT constraint_name.
- */
+/** ALTER TABLE [IF EXISTS] [catalog_name.][db_name.]table_name DROP CONSTRAINT constraint_name. */
 public class SqlAlterTableDropConstraint extends SqlAlterTable {
-	private final SqlIdentifier constraintName;
 
-	/**
-	 * Creates an alter table drop constraint node.
-	 *
-	 * @param tableID        Table ID
-	 * @param constraintName Constraint name
-	 * @param pos            Parser position
-	 */
-	public SqlAlterTableDropConstraint(
-			SqlIdentifier tableID,
-			SqlIdentifier constraintName,
-			SqlParserPos pos) {
-		super(pos, tableID);
-		this.constraintName = constraintName;
-	}
+    private final SqlIdentifier constraintName;
 
-	public SqlIdentifier getConstraintName() {
-		return constraintName;
-	}
+    /**
+     * Creates an alter table drop constraint node.
+     *
+     * @param pos Parser position
+     * @param tableName Table name
+     * @param constraintName Constraint name
+     * @param ifTableExists Whether IF EXISTS is specified
+     */
+    public SqlAlterTableDropConstraint(
+            SqlParserPos pos,
+            SqlIdentifier tableName,
+            SqlIdentifier constraintName,
+            boolean ifTableExists) {
+        super(pos, tableName, ifTableExists);
+        this.constraintName = constraintName;
+    }
 
-	@Override
-	public List<SqlNode> getOperandList() {
-		return ImmutableNullableList.of(getTableName(), this.constraintName);
-	}
+    public SqlIdentifier getConstraintName() {
+        return constraintName;
+    }
 
-	@Override
-	public void unparse(SqlWriter writer, int leftPrec, int rightPrec) {
-		super.unparse(writer, leftPrec, rightPrec);
-		writer.keyword("DROP CONSTRAINT");
-		this.constraintName.unparse(writer, leftPrec, rightPrec);
-	}
+    @Override
+    public List<SqlNode> getOperandList() {
+        return ImmutableNullableList.of(getTableName(), this.constraintName);
+    }
+
+    @Override
+    public void unparse(SqlWriter writer, int leftPrec, int rightPrec) {
+        super.unparse(writer, leftPrec, rightPrec);
+        writer.keyword("DROP CONSTRAINT");
+        this.constraintName.unparse(writer, leftPrec, rightPrec);
+    }
 }

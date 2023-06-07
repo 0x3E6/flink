@@ -21,6 +21,8 @@ import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.Tuple;
 import org.apache.flink.api.java.tuple.Tuple3;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.runtime.state.KeyGroupRangeAssignment;
 import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.datastream.DataStream;
@@ -34,7 +36,6 @@ import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer;
 import org.apache.flink.streaming.connectors.kafka.KafkaConsumerTestBase;
 import org.apache.flink.streaming.connectors.kafka.KafkaProducerTestBase;
 import org.apache.flink.streaming.connectors.kafka.KafkaTestEnvironmentImpl;
-import org.apache.flink.streaming.connectors.kafka.internals.KafkaTopicPartition;
 import org.apache.flink.streaming.connectors.kafka.internals.KafkaTopicPartitionAssigner;
 import org.apache.flink.test.util.SuccessException;
 import org.apache.flink.util.Collector;
@@ -45,225 +46,268 @@ import java.util.Random;
 
 import static org.apache.flink.streaming.api.TimeCharacteristic.EventTime;
 
-/**
- * Base Test Class for KafkaShuffle.
- */
+/** Base Test Class for KafkaShuffle. */
 public class KafkaShuffleTestBase extends KafkaConsumerTestBase {
-	static final long INIT_TIMESTAMP = System.currentTimeMillis();
+    static final long INIT_TIMESTAMP = System.currentTimeMillis();
 
-	@BeforeClass
-	public static void prepare() throws Exception {
-		KafkaProducerTestBase.prepare();
-		((KafkaTestEnvironmentImpl) kafkaServer).setProducerSemantic(FlinkKafkaProducer.Semantic.EXACTLY_ONCE);
-	}
+    @BeforeClass
+    public static void prepare() throws Exception {
+        KafkaProducerTestBase.prepare();
+        ((KafkaTestEnvironmentImpl) kafkaServer)
+                .setProducerSemantic(FlinkKafkaProducer.Semantic.EXACTLY_ONCE);
+    }
 
-	static class KafkaSourceFunction extends RichParallelSourceFunction<Tuple3<Integer, Long, Integer>> {
-		private volatile boolean running = true;
-		private final int numElementsPerProducer;
-		private final boolean unBounded;
+    static class KafkaSourceFunction
+            extends RichParallelSourceFunction<Tuple3<Integer, Long, Integer>> {
+        private volatile boolean running = true;
+        private final int numElementsPerProducer;
+        private final boolean unBounded;
 
-		KafkaSourceFunction(int numElementsPerProducer) {
-			this.numElementsPerProducer = numElementsPerProducer;
-			this.unBounded = true;
-		}
+        KafkaSourceFunction(int numElementsPerProducer) {
+            this.numElementsPerProducer = numElementsPerProducer;
+            this.unBounded = true;
+        }
 
-		KafkaSourceFunction(int numElementsPerProducer, boolean unBounded) {
-			this.numElementsPerProducer = numElementsPerProducer;
-			this.unBounded = unBounded;
-		}
+        KafkaSourceFunction(int numElementsPerProducer, boolean unBounded) {
+            this.numElementsPerProducer = numElementsPerProducer;
+            this.unBounded = unBounded;
+        }
 
-		@Override
-		public void run(SourceContext<Tuple3<Integer, Long, Integer>> ctx) throws Exception{
-			long timestamp = INIT_TIMESTAMP;
-			int sourceInstanceId = getRuntimeContext().getIndexOfThisSubtask();
-			for (int i = 0; i < numElementsPerProducer && running; i++) {
-				ctx.collect(new Tuple3<>(i, timestamp++, sourceInstanceId));
-			}
+        @Override
+        public void run(SourceContext<Tuple3<Integer, Long, Integer>> ctx) throws Exception {
+            long timestamp = INIT_TIMESTAMP;
+            int sourceInstanceId = getRuntimeContext().getIndexOfThisSubtask();
+            for (int i = 0; i < numElementsPerProducer && running; i++) {
+                ctx.collect(new Tuple3<>(i, timestamp++, sourceInstanceId));
+            }
 
-			while (running && unBounded) {
-				Thread.sleep(100);
-			}
-		}
+            while (running && unBounded) {
+                Thread.sleep(100);
+            }
+        }
 
-		@Override
-		public void cancel() {
-			running = false;
-		}
-	}
+        @Override
+        public void cancel() {
+            running = false;
+        }
+    }
 
-	static KeyedStream<Tuple3<Integer, Long, Integer>, Tuple> createKafkaShuffle(
-			StreamExecutionEnvironment env,
-			String topic,
-			int numElementsPerProducer,
-			int producerParallelism,
-			TimeCharacteristic timeCharacteristic,
-			int numberOfPartitions) {
-		return createKafkaShuffle(
-			env,
-			topic,
-			numElementsPerProducer,
-			producerParallelism,
-			timeCharacteristic,
-			numberOfPartitions,
-			false);
-	}
+    static KeyedStream<Tuple3<Integer, Long, Integer>, Tuple> createKafkaShuffle(
+            StreamExecutionEnvironment env,
+            String topic,
+            int numElementsPerProducer,
+            int producerParallelism,
+            TimeCharacteristic timeCharacteristic,
+            int numberOfPartitions) {
+        return createKafkaShuffle(
+                env,
+                topic,
+                numElementsPerProducer,
+                producerParallelism,
+                timeCharacteristic,
+                numberOfPartitions,
+                false);
+    }
 
-	static KeyedStream<Tuple3<Integer, Long, Integer>, Tuple> createKafkaShuffle(
-			StreamExecutionEnvironment env,
-			String topic,
-			int numElementsPerProducer,
-			int producerParallelism,
-			TimeCharacteristic timeCharacteristic,
-			int numberOfPartitions,
-			boolean randomness) {
-		DataStream<Tuple3<Integer, Long, Integer>> source =
-			env.addSource(new KafkaSourceFunction(numElementsPerProducer)).setParallelism(producerParallelism);
-		DataStream<Tuple3<Integer, Long, Integer>> input = (timeCharacteristic == EventTime) ?
-			source.assignTimestampsAndWatermarks(new PunctuatedExtractor(randomness)).setParallelism(producerParallelism) : source;
+    static KeyedStream<Tuple3<Integer, Long, Integer>, Tuple> createKafkaShuffle(
+            StreamExecutionEnvironment env,
+            String topic,
+            int numElementsPerProducer,
+            int producerParallelism,
+            TimeCharacteristic timeCharacteristic,
+            int numberOfPartitions,
+            boolean randomness) {
+        DataStream<Tuple3<Integer, Long, Integer>> source =
+                env.addSource(new KafkaSourceFunction(numElementsPerProducer))
+                        .setParallelism(producerParallelism);
+        DataStream<Tuple3<Integer, Long, Integer>> input =
+                (timeCharacteristic == EventTime)
+                        ? source.assignTimestampsAndWatermarks(new PunctuatedExtractor(randomness))
+                                .setParallelism(producerParallelism)
+                        : source;
 
-		return FlinkKafkaShuffle.persistentKeyBy(
-			input,
-			topic,
-			producerParallelism,
-			numberOfPartitions,
-			kafkaServer.getStandardProperties(),
-			0);
-	}
+        return FlinkKafkaShuffle.persistentKeyBy(
+                input,
+                topic,
+                producerParallelism,
+                numberOfPartitions,
+                kafkaServer.getStandardProperties(),
+                0);
+    }
 
-	static class PunctuatedExtractor implements AssignerWithPunctuatedWatermarks<Tuple3<Integer, Long, Integer>> {
-		private static final long serialVersionUID = 1L;
-		boolean randomness;
-		Random rnd = new Random(123);
+    static class PunctuatedExtractor
+            implements AssignerWithPunctuatedWatermarks<Tuple3<Integer, Long, Integer>> {
+        private static final long serialVersionUID = 1L;
+        boolean randomness;
+        Random rnd = new Random(123);
 
-		PunctuatedExtractor() {
-			randomness = false;
-		}
+        PunctuatedExtractor() {
+            randomness = false;
+        }
 
-		PunctuatedExtractor(boolean randomness) {
-			this.randomness = randomness;
-		}
+        PunctuatedExtractor(boolean randomness) {
+            this.randomness = randomness;
+        }
 
-		@Override
-		public long extractTimestamp(Tuple3<Integer, Long, Integer> element, long previousTimestamp) {
-			return element.f1;
-		}
+        @Override
+        public long extractTimestamp(
+                Tuple3<Integer, Long, Integer> element, long previousTimestamp) {
+            return element.f1;
+        }
 
-		@Override
-		public Watermark checkAndGetNextWatermark(Tuple3<Integer, Long, Integer> lastElement, long extractedTimestamp) {
-			long randomValue = randomness ? rnd.nextInt(10) : 0;
-			return new Watermark(extractedTimestamp + randomValue);
-		}
-	}
+        @Override
+        public Watermark checkAndGetNextWatermark(
+                Tuple3<Integer, Long, Integer> lastElement, long extractedTimestamp) {
+            long randomValue = randomness ? rnd.nextInt(10) : 0;
+            return new Watermark(extractedTimestamp + randomValue);
+        }
+    }
 
-	static class PartitionValidator
-			extends KeyedProcessFunction<Tuple, Tuple3<Integer, Long, Integer>, Tuple3<Integer, Long, Integer>> {
-		private final KeySelector<Tuple3<Integer, Long, Integer>, Tuple> keySelector;
-		private final int numberOfPartitions;
-		private final String topic;
+    static class PartitionValidator
+            extends KeyedProcessFunction<
+                    Tuple, Tuple3<Integer, Long, Integer>, Tuple3<Integer, Long, Integer>> {
+        private final KeySelector<Tuple3<Integer, Long, Integer>, Tuple> keySelector;
+        private final int numberOfPartitions;
+        private final String topic;
+        private KeyGroupRange keyGroupRange;
 
-		private int previousPartition;
+        private int previousPartition;
 
-		PartitionValidator(
-				KeySelector<Tuple3<Integer, Long, Integer>, Tuple> keySelector,
-				int numberOfPartitions,
-				String topic) {
-			this.keySelector = keySelector;
-			this.numberOfPartitions = numberOfPartitions;
-			this.topic = topic;
-			this.previousPartition = -1;
-		}
+        PartitionValidator(
+                KeySelector<Tuple3<Integer, Long, Integer>, Tuple> keySelector,
+                int numberOfPartitions,
+                String topic) {
+            this.keySelector = keySelector;
+            this.numberOfPartitions = numberOfPartitions;
+            this.topic = topic;
+            this.previousPartition = -1;
+        }
 
-		@Override
-		public void processElement(
-				Tuple3<Integer, Long, Integer> in,
-				Context ctx,
-				Collector<Tuple3<Integer, Long, Integer>> out) throws Exception {
-			int expectedPartition = KeyGroupRangeAssignment
-				.assignKeyToParallelOperator(keySelector.getKey(in), numberOfPartitions, numberOfPartitions);
-			int indexOfThisSubtask = getRuntimeContext().getIndexOfThisSubtask();
-			KafkaTopicPartition partition = new KafkaTopicPartition(topic, expectedPartition);
+        @Override
+        public void open(Configuration parameters) throws Exception {
+            super.open(parameters);
+            this.keyGroupRange =
+                    KeyGroupRangeAssignment.computeKeyGroupRangeForOperatorIndex(
+                            getRuntimeContext().getMaxNumberOfParallelSubtasks(),
+                            numberOfPartitions,
+                            getRuntimeContext().getIndexOfThisSubtask());
+        }
 
-			// This is how Kafka assign partition to subTask;
-			boolean rightAssignment =
-				KafkaTopicPartitionAssigner.assign(partition, numberOfPartitions) == indexOfThisSubtask;
-			boolean samePartition = (previousPartition == expectedPartition) || (previousPartition == -1);
-			previousPartition = expectedPartition;
+        @Override
+        public void processElement(
+                Tuple3<Integer, Long, Integer> in,
+                Context ctx,
+                Collector<Tuple3<Integer, Long, Integer>> out)
+                throws Exception {
+            int expectedSubtask =
+                    KeyGroupRangeAssignment.assignKeyToParallelOperator(
+                            keySelector.getKey(in), numberOfPartitions, numberOfPartitions);
+            int expectedPartition = -1;
+            // This is how Kafka assign partition to subTask;
+            for (int i = 0; i < numberOfPartitions; i++) {
+                if (KafkaTopicPartitionAssigner.assign(topic, i, numberOfPartitions)
+                        == expectedSubtask) {
+                    expectedPartition = i;
+                }
+            }
+            int indexOfThisSubtask = getRuntimeContext().getIndexOfThisSubtask();
 
-			if (!(rightAssignment && samePartition)) {
-				throw new Exception("Error: Kafka partition assignment error ");
-			}
-			out.collect(in);
-		}
-	}
+            boolean rightAssignment =
+                    (expectedSubtask == indexOfThisSubtask)
+                            && keyGroupRange.contains(
+                                    KeyGroupRangeAssignment.assignToKeyGroup(
+                                            keySelector.getKey(in),
+                                            getRuntimeContext().getMaxNumberOfParallelSubtasks()));
+            boolean samePartition =
+                    (expectedPartition != -1)
+                            && ((previousPartition == expectedPartition)
+                                    || (previousPartition == -1));
+            previousPartition = expectedPartition;
 
-	static class WatermarkValidator
-			extends KeyedProcessFunction<Tuple, Tuple3<Integer, Long, Integer>, Tuple3<Integer, Long, Integer>> {
-		private long previousWatermark = Long.MIN_VALUE;   // initial watermark get from timeService
+            if (!(rightAssignment && samePartition)) {
+                throw new Exception("Error: Kafka partition assignment error ");
+            }
+            out.collect(in);
+        }
+    }
 
-		@Override
-		public void processElement(
-				Tuple3<Integer, Long, Integer> in,
-				Context ctx,
-				Collector<Tuple3<Integer, Long, Integer>> out) throws Exception {
+    static class WatermarkValidator
+            extends KeyedProcessFunction<
+                    Tuple, Tuple3<Integer, Long, Integer>, Tuple3<Integer, Long, Integer>> {
+        private long previousWatermark = Long.MIN_VALUE; // initial watermark get from timeService
 
-			long watermark = ctx.timerService().currentWatermark();
+        @Override
+        public void processElement(
+                Tuple3<Integer, Long, Integer> in,
+                Context ctx,
+                Collector<Tuple3<Integer, Long, Integer>> out)
+                throws Exception {
 
-			// Notice that the timerService might not be updated if no new watermark has been emitted, hence equivalent
-			// watermark is allowed, strictly incremental check is done when fetching watermark from KafkaShuffleFetcher.
-			if (watermark < previousWatermark) {
-				throw new Exception(
-					"Error: watermark should always increase. current watermark : previous watermark ["
-						+ watermark + " : " + previousWatermark + "]");
-			}
-			previousWatermark = watermark;
+            long watermark = ctx.timerService().currentWatermark();
 
-			out.collect(in);
-		}
-	}
+            // Notice that the timerService might not be updated if no new watermark has been
+            // emitted, hence equivalent
+            // watermark is allowed, strictly incremental check is done when fetching watermark from
+            // KafkaShuffleFetcher.
+            if (watermark < previousWatermark) {
+                throw new Exception(
+                        "Error: watermark should always increase. current watermark : previous watermark ["
+                                + watermark
+                                + " : "
+                                + previousWatermark
+                                + "]");
+            }
+            previousWatermark = watermark;
 
-	static class ElementCountNoLessThanValidator
-			implements MapFunction<Tuple3<Integer, Long, Integer>, Tuple3<Integer, Long, Integer>> {
-		private final int totalCount;
-		private int counter = 0;
+            out.collect(in);
+        }
+    }
 
-		ElementCountNoLessThanValidator(int totalCount) {
-			this.totalCount = totalCount;
-		}
+    static class ElementCountNoLessThanValidator
+            implements MapFunction<Tuple3<Integer, Long, Integer>, Tuple3<Integer, Long, Integer>> {
+        private final int totalCount;
+        private int counter = 0;
 
-		@Override
-		public Tuple3<Integer, Long, Integer> map(Tuple3<Integer, Long, Integer> element) throws Exception {
-			counter++;
+        ElementCountNoLessThanValidator(int totalCount) {
+            this.totalCount = totalCount;
+        }
 
-			if (counter == totalCount) {
-				throw new SuccessException();
-			}
+        @Override
+        public Tuple3<Integer, Long, Integer> map(Tuple3<Integer, Long, Integer> element)
+                throws Exception {
+            counter++;
 
-			return element;
-		}
-	}
+            if (counter == totalCount) {
+                throw new SuccessException();
+            }
 
-	static class ElementCountNoMoreThanValidator
-			implements MapFunction<Tuple3<Integer, Long, Integer>, Tuple3<Integer, Long, Integer>> {
-		private final int totalCount;
-		private int counter = 0;
+            return element;
+        }
+    }
 
-		ElementCountNoMoreThanValidator(int totalCount) {
-			this.totalCount = totalCount;
-		}
+    static class ElementCountNoMoreThanValidator
+            implements MapFunction<Tuple3<Integer, Long, Integer>, Tuple3<Integer, Long, Integer>> {
+        private final int totalCount;
+        private int counter = 0;
 
-		@Override
-		public Tuple3<Integer, Long, Integer> map(Tuple3<Integer, Long, Integer> element) throws Exception {
-			counter++;
+        ElementCountNoMoreThanValidator(int totalCount) {
+            this.totalCount = totalCount;
+        }
 
-			if (counter > totalCount) {
-				throw new Exception("Error: number of elements more than expected");
-			}
+        @Override
+        public Tuple3<Integer, Long, Integer> map(Tuple3<Integer, Long, Integer> element)
+                throws Exception {
+            counter++;
 
-			return element;
-		}
-	}
+            if (counter > totalCount) {
+                throw new Exception("Error: number of elements more than expected");
+            }
 
-	String topic(String prefix, TimeCharacteristic timeCharacteristic) {
-		return prefix + "_" + timeCharacteristic;
-	}
+            return element;
+        }
+    }
+
+    String topic(String prefix, TimeCharacteristic timeCharacteristic) {
+        return prefix + "_" + timeCharacteristic;
+    }
 }

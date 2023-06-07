@@ -20,33 +20,54 @@ package org.apache.flink.contrib.streaming.state;
 
 import org.rocksdb.Cache;
 import org.rocksdb.WriteBufferManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
- * The set of resources that can be shared by all RocksDB instances in a slot.
- * Sharing these resources helps RocksDB a predictable resource footprint.
+ * The set of resources that can be shared by all RocksDB instances in a slot. Sharing these
+ * resources helps RocksDB a predictable resource footprint.
  */
 final class RocksDBSharedResources implements AutoCloseable {
+    private static final Logger LOG = LoggerFactory.getLogger(RocksDBSharedResources.class);
 
-	private final Cache cache;
+    private final Cache cache;
 
-	private final WriteBufferManager writeBufferManager;
+    private final WriteBufferManager writeBufferManager;
+    private final long writeBufferManagerCapacity;
 
-	RocksDBSharedResources(Cache cache, WriteBufferManager writeBufferManager) {
-		this.cache = cache;
-		this.writeBufferManager = writeBufferManager;
-	}
+    private final boolean usingPartitionedIndexFilters;
 
-	public Cache getCache() {
-		return cache;
-	}
+    RocksDBSharedResources(
+            Cache cache,
+            WriteBufferManager writeBufferManager,
+            long writeBufferManagerCapacity,
+            boolean usingPartitionedIndexFilters) {
+        this.cache = cache;
+        this.writeBufferManager = writeBufferManager;
+        this.writeBufferManagerCapacity = writeBufferManagerCapacity;
+        this.usingPartitionedIndexFilters = usingPartitionedIndexFilters;
+    }
 
-	public WriteBufferManager getWriteBufferManager() {
-		return writeBufferManager;
-	}
+    public Cache getCache() {
+        return cache;
+    }
 
-	@Override
-	public void close() {
-		writeBufferManager.close();
-		cache.close();
-	}
+    public WriteBufferManager getWriteBufferManager() {
+        return writeBufferManager;
+    }
+
+    public long getWriteBufferManagerCapacity() {
+        return writeBufferManagerCapacity;
+    }
+
+    public boolean isUsingPartitionedIndexFilters() {
+        return usingPartitionedIndexFilters;
+    }
+
+    @Override
+    public void close() {
+        LOG.debug("Closing RocksDBSharedResources");
+        writeBufferManager.close();
+        cache.close();
+    }
 }

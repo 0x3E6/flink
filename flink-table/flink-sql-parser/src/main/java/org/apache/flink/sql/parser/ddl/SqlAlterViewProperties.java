@@ -18,6 +18,8 @@
 
 package org.apache.flink.sql.parser.ddl;
 
+import org.apache.flink.sql.parser.SqlUnparseUtils;
+
 import org.apache.calcite.sql.SqlIdentifier;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.SqlNodeList;
@@ -29,43 +31,36 @@ import java.util.List;
 
 import static java.util.Objects.requireNonNull;
 
-/**
- * ALTER DDL to change properties of a view.
- */
+/** ALTER DDL to change properties of a view. */
 public class SqlAlterViewProperties extends SqlAlterView {
 
-	private final SqlNodeList propertyList;
+    private final SqlNodeList propertyList;
 
-	public SqlAlterViewProperties(SqlParserPos pos, SqlIdentifier viewName, SqlNodeList propertyList) {
-		super(pos, viewName);
-		this.propertyList = requireNonNull(propertyList, "propertyList should not be null");
-	}
+    public SqlAlterViewProperties(
+            SqlParserPos pos, SqlIdentifier viewName, SqlNodeList propertyList) {
+        super(pos, viewName);
+        this.propertyList = requireNonNull(propertyList, "propertyList should not be null");
+    }
 
-	@Override
-	public List<SqlNode> getOperandList() {
-		return ImmutableNullableList.of(viewIdentifier, propertyList);
-	}
+    @Override
+    public List<SqlNode> getOperandList() {
+        return ImmutableNullableList.of(viewIdentifier, propertyList);
+    }
 
-	public SqlNodeList getPropertyList() {
-		return propertyList;
-	}
+    public SqlNodeList getPropertyList() {
+        return propertyList;
+    }
 
-	@Override
-	public void unparse(SqlWriter writer, int leftPrec, int rightPrec) {
-		super.unparse(writer, leftPrec, rightPrec);
-		writer.keyword("SET");
-		SqlWriter.Frame withFrame = writer.startList("(", ")");
-		for (SqlNode property : propertyList) {
-			printIndent(writer);
-			property.unparse(writer, leftPrec, rightPrec);
-		}
-		writer.newlineAndIndent();
-		writer.endList(withFrame);
-	}
-
-	protected void printIndent(SqlWriter writer) {
-		writer.sep(",", false);
-		writer.newlineAndIndent();
-		writer.print("  ");
-	}
+    @Override
+    public void unparse(SqlWriter writer, int leftPrec, int rightPrec) {
+        super.unparse(writer, leftPrec, rightPrec);
+        writer.keyword("SET");
+        SqlWriter.Frame withFrame = writer.startList("(", ")");
+        for (SqlNode property : propertyList) {
+            SqlUnparseUtils.printIndent(writer);
+            property.unparse(writer, leftPrec, rightPrec);
+        }
+        writer.newlineAndIndent();
+        writer.endList(withFrame);
+    }
 }

@@ -23,13 +23,13 @@ import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.core.testutils.CommonTestUtils;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.OperatorID;
+import org.apache.flink.runtime.jobgraph.RestoreMode;
 import org.apache.flink.runtime.state.SharedStateRegistry;
+import org.apache.flink.runtime.state.SharedStateRegistryImpl;
 import org.apache.flink.runtime.state.testutils.EmptyStreamStateHandle;
 import org.apache.flink.runtime.state.testutils.TestCompletedCheckpointStorageLocation;
 
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -37,303 +37,398 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
-/**
- * Unit tests for the {@link CompletedCheckpoint}.
- */
+/** Unit tests for the {@link CompletedCheckpoint}. */
 public class CompletedCheckpointTest {
 
-	@Rule
-	public final TemporaryFolder tmpFolder = new TemporaryFolder();
+    @Test
+    void testCompareCheckpointsWithDifferentOrder() {
 
-	@Test
-	public void testCompareCheckpointsWithDifferentOrder() {
+        CompletedCheckpoint checkpoint1 =
+                new CompletedCheckpoint(
+                        new JobID(),
+                        0,
+                        0,
+                        1,
+                        new HashMap<>(),
+                        Collections.emptyList(),
+                        CheckpointProperties.forCheckpoint(
+                                CheckpointRetentionPolicy.RETAIN_ON_FAILURE),
+                        new TestCompletedCheckpointStorageLocation(),
+                        null);
 
-		CompletedCheckpoint checkpoint1 = new CompletedCheckpoint(
-			new JobID(), 0, 0, 1,
-			new HashMap<>(),
-			Collections.emptyList(),
-			CheckpointProperties.forCheckpoint(CheckpointRetentionPolicy.RETAIN_ON_FAILURE),
-			new TestCompletedCheckpointStorageLocation());
+        CompletedCheckpoint checkpoint2 =
+                new CompletedCheckpoint(
+                        new JobID(),
+                        1,
+                        0,
+                        1,
+                        new HashMap<>(),
+                        Collections.emptyList(),
+                        CheckpointProperties.forCheckpoint(
+                                CheckpointRetentionPolicy.RETAIN_ON_FAILURE),
+                        new TestCompletedCheckpointStorageLocation(),
+                        null);
 
-		CompletedCheckpoint checkpoint2 = new CompletedCheckpoint(
-			new JobID(), 1, 0, 1,
-			new HashMap<>(),
-			Collections.emptyList(),
-			CheckpointProperties.forCheckpoint(CheckpointRetentionPolicy.RETAIN_ON_FAILURE),
-			new TestCompletedCheckpointStorageLocation());
+        List<CompletedCheckpoint> checkpoints1 = new ArrayList<>();
+        checkpoints1.add(checkpoint1);
+        checkpoints1.add(checkpoint2);
+        checkpoints1.add(checkpoint1);
 
-		List<CompletedCheckpoint> checkpoints1= new ArrayList<>();
-		checkpoints1.add(checkpoint1);
-		checkpoints1.add(checkpoint2);
-		checkpoints1.add(checkpoint1);
+        List<CompletedCheckpoint> checkpoints2 = new ArrayList<>();
+        checkpoints2.add(checkpoint2);
+        checkpoints2.add(checkpoint1);
+        checkpoints2.add(checkpoint2);
 
-		List<CompletedCheckpoint> checkpoints2 = new ArrayList<>();
-		checkpoints2.add(checkpoint2);
-		checkpoints2.add(checkpoint1);
-		checkpoints2.add(checkpoint2);
+        assertThat(CompletedCheckpoint.checkpointsMatch(checkpoints1, checkpoints2)).isFalse();
+    }
 
-		assertFalse(CompletedCheckpoint.checkpointsMatch(checkpoints1, checkpoints2));
-	}
+    @Test
+    void testCompareCheckpointsWithSameOrder() {
 
-	@Test
-	public void testCompareCheckpointsWithSameOrder() {
+        CompletedCheckpoint checkpoint1 =
+                new CompletedCheckpoint(
+                        new JobID(),
+                        0,
+                        0,
+                        1,
+                        new HashMap<>(),
+                        Collections.emptyList(),
+                        CheckpointProperties.forCheckpoint(
+                                CheckpointRetentionPolicy.RETAIN_ON_FAILURE),
+                        new TestCompletedCheckpointStorageLocation(),
+                        null);
 
-		CompletedCheckpoint checkpoint1 = new CompletedCheckpoint(
-			new JobID(), 0, 0, 1,
-			new HashMap<>(),
-			Collections.emptyList(),
-			CheckpointProperties.forCheckpoint(CheckpointRetentionPolicy.RETAIN_ON_FAILURE),
-			new TestCompletedCheckpointStorageLocation());
+        CompletedCheckpoint checkpoint2 =
+                new CompletedCheckpoint(
+                        new JobID(),
+                        1,
+                        0,
+                        1,
+                        new HashMap<>(),
+                        Collections.emptyList(),
+                        CheckpointProperties.forCheckpoint(
+                                CheckpointRetentionPolicy.RETAIN_ON_FAILURE),
+                        new TestCompletedCheckpointStorageLocation(),
+                        null);
 
-		CompletedCheckpoint checkpoint2 = new CompletedCheckpoint(
-			new JobID(), 1, 0, 1,
-			new HashMap<>(),
-			Collections.emptyList(),
-			CheckpointProperties.forCheckpoint(CheckpointRetentionPolicy.RETAIN_ON_FAILURE),
-			new TestCompletedCheckpointStorageLocation());
+        List<CompletedCheckpoint> checkpoints1 = new ArrayList<>();
+        checkpoints1.add(checkpoint1);
+        checkpoints1.add(checkpoint2);
+        checkpoints1.add(checkpoint1);
 
-		List<CompletedCheckpoint> checkpoints1= new ArrayList<>();
-		checkpoints1.add(checkpoint1);
-		checkpoints1.add(checkpoint2);
-		checkpoints1.add(checkpoint1);
+        List<CompletedCheckpoint> checkpoints2 = new ArrayList<>();
+        checkpoints2.add(checkpoint1);
+        checkpoints2.add(checkpoint2);
+        checkpoints2.add(checkpoint1);
 
-		List<CompletedCheckpoint> checkpoints2 = new ArrayList<>();
-		checkpoints2.add(checkpoint1);
-		checkpoints2.add(checkpoint2);
-		checkpoints2.add(checkpoint1);
+        assertThat(CompletedCheckpoint.checkpointsMatch(checkpoints1, checkpoints2)).isTrue();
+    }
 
-		assertTrue(CompletedCheckpoint.checkpointsMatch(checkpoints1, checkpoints2));
-	}
+    /** Verify that both JobID and checkpoint id are taken into account when comparing. */
+    @Test
+    void testCompareCheckpointsWithSameJobID() {
+        JobID jobID = new JobID();
 
-	/**
-	 * Verify that both JobID and checkpoint id are taken into account when comparing.
-	 */
-	@Test
-	public void testCompareCheckpointsWithSameJobID() {
-		JobID jobID = new JobID();
+        CompletedCheckpoint checkpoint1 =
+                new CompletedCheckpoint(
+                        jobID,
+                        0,
+                        0,
+                        1,
+                        new HashMap<>(),
+                        Collections.emptyList(),
+                        CheckpointProperties.forCheckpoint(
+                                CheckpointRetentionPolicy.RETAIN_ON_FAILURE),
+                        new TestCompletedCheckpointStorageLocation(),
+                        null);
 
-		CompletedCheckpoint checkpoint1 = new CompletedCheckpoint(
-			jobID, 0, 0, 1,
-			new HashMap<>(),
-			Collections.emptyList(),
-			CheckpointProperties.forCheckpoint(CheckpointRetentionPolicy.RETAIN_ON_FAILURE),
-			new TestCompletedCheckpointStorageLocation());
+        CompletedCheckpoint checkpoint2 =
+                new CompletedCheckpoint(
+                        jobID,
+                        1,
+                        0,
+                        1,
+                        new HashMap<>(),
+                        Collections.emptyList(),
+                        CheckpointProperties.forCheckpoint(
+                                CheckpointRetentionPolicy.RETAIN_ON_FAILURE),
+                        new TestCompletedCheckpointStorageLocation(),
+                        null);
 
-		CompletedCheckpoint checkpoint2 = new CompletedCheckpoint(
-			jobID, 1, 0, 1,
-			new HashMap<>(),
-			Collections.emptyList(),
-			CheckpointProperties.forCheckpoint(CheckpointRetentionPolicy.RETAIN_ON_FAILURE),
-			new TestCompletedCheckpointStorageLocation());
+        List<CompletedCheckpoint> checkpoints1 = new ArrayList<>();
+        checkpoints1.add(checkpoint1);
 
-		List<CompletedCheckpoint> checkpoints1= new ArrayList<>();
-		checkpoints1.add(checkpoint1);
+        List<CompletedCheckpoint> checkpoints2 = new ArrayList<>();
+        checkpoints2.add(checkpoint2);
 
-		List<CompletedCheckpoint> checkpoints2 = new ArrayList<>();
-		checkpoints2.add(checkpoint2);
+        assertThat(CompletedCheckpoint.checkpointsMatch(checkpoints1, checkpoints2)).isFalse();
+    }
 
-		assertFalse(CompletedCheckpoint.checkpointsMatch(checkpoints1, checkpoints2));
-	}
+    /** Verify that both JobID and checkpoint id are taken into account when comparing. */
+    @Test
+    void testCompareCheckpointsWithSameCheckpointId() {
+        JobID jobID1 = new JobID();
+        JobID jobID2 = new JobID();
 
-	/**
-	 * Verify that both JobID and checkpoint id are taken into account when comparing.
-	 */
-	@Test
-	public void testCompareCheckpointsWithSameCheckpointId() {
-		JobID jobID1 = new JobID();
-		JobID jobID2 = new JobID();
+        CompletedCheckpoint checkpoint1 =
+                new CompletedCheckpoint(
+                        jobID1,
+                        0,
+                        0,
+                        1,
+                        new HashMap<>(),
+                        Collections.emptyList(),
+                        CheckpointProperties.forCheckpoint(
+                                CheckpointRetentionPolicy.RETAIN_ON_FAILURE),
+                        new TestCompletedCheckpointStorageLocation(),
+                        null);
 
-		CompletedCheckpoint checkpoint1 = new CompletedCheckpoint(
-			jobID1, 0, 0, 1,
-			new HashMap<>(),
-			Collections.emptyList(),
-			CheckpointProperties.forCheckpoint(CheckpointRetentionPolicy.RETAIN_ON_FAILURE),
-			new TestCompletedCheckpointStorageLocation());
+        CompletedCheckpoint checkpoint2 =
+                new CompletedCheckpoint(
+                        jobID2,
+                        0,
+                        0,
+                        1,
+                        new HashMap<>(),
+                        Collections.emptyList(),
+                        CheckpointProperties.forCheckpoint(
+                                CheckpointRetentionPolicy.RETAIN_ON_FAILURE),
+                        new TestCompletedCheckpointStorageLocation(),
+                        null);
 
-		CompletedCheckpoint checkpoint2 = new CompletedCheckpoint(
-			jobID2, 0, 0, 1,
-			new HashMap<>(),
-			Collections.emptyList(),
-			CheckpointProperties.forCheckpoint(CheckpointRetentionPolicy.RETAIN_ON_FAILURE),
-			new TestCompletedCheckpointStorageLocation());
+        List<CompletedCheckpoint> checkpoints1 = new ArrayList<>();
+        checkpoints1.add(checkpoint1);
 
-		List<CompletedCheckpoint> checkpoints1= new ArrayList<>();
-		checkpoints1.add(checkpoint1);
+        List<CompletedCheckpoint> checkpoints2 = new ArrayList<>();
+        checkpoints2.add(checkpoint2);
 
-		List<CompletedCheckpoint> checkpoints2 = new ArrayList<>();
-		checkpoints2.add(checkpoint2);
+        assertThat(CompletedCheckpoint.checkpointsMatch(checkpoints1, checkpoints2)).isFalse();
+    }
 
-		assertFalse(CompletedCheckpoint.checkpointsMatch(checkpoints1, checkpoints2));
-	}
+    @Test
+    void testRegisterStatesAtRegistry() {
+        OperatorState state = mock(OperatorState.class);
+        Map<OperatorID, OperatorState> operatorStates = new HashMap<>();
+        operatorStates.put(new OperatorID(), state);
 
-	@Test
-	public void testRegisterStatesAtRegistry() {
-		OperatorState state = mock(OperatorState.class);
-		Map<OperatorID, OperatorState> operatorStates = new HashMap<>();
-		operatorStates.put(new OperatorID(), state);
+        CompletedCheckpoint checkpoint =
+                new CompletedCheckpoint(
+                        new JobID(),
+                        0,
+                        0,
+                        1,
+                        operatorStates,
+                        Collections.emptyList(),
+                        CheckpointProperties.forCheckpoint(
+                                CheckpointRetentionPolicy.RETAIN_ON_FAILURE),
+                        new TestCompletedCheckpointStorageLocation(),
+                        null);
 
-		CompletedCheckpoint checkpoint = new CompletedCheckpoint(
-				new JobID(), 0, 0, 1,
-				operatorStates,
-				Collections.emptyList(),
-				CheckpointProperties.forCheckpoint(CheckpointRetentionPolicy.RETAIN_ON_FAILURE),
-				new TestCompletedCheckpointStorageLocation());
+        SharedStateRegistry sharedStateRegistry = new SharedStateRegistryImpl();
+        checkpoint.registerSharedStatesAfterRestored(sharedStateRegistry, RestoreMode.DEFAULT);
+        verify(state, times(1)).registerSharedStates(sharedStateRegistry, 0L);
+    }
 
-		SharedStateRegistry sharedStateRegistry = new SharedStateRegistry();
-		checkpoint.registerSharedStatesAfterRestored(sharedStateRegistry);
-		verify(state, times(1)).registerSharedStates(sharedStateRegistry);
-	}
+    /** Tests that the garbage collection properties are respected when subsuming checkpoints. */
+    @Test
+    void testCleanUpOnSubsume() throws Exception {
+        OperatorState state = mock(OperatorState.class);
+        Map<OperatorID, OperatorState> operatorStates = new HashMap<>();
+        operatorStates.put(new OperatorID(), state);
 
-	/**
-	 * Tests that the garbage collection properties are respected when subsuming checkpoints.
-	 */
-	@Test
-	public void testCleanUpOnSubsume() throws Exception {
-		OperatorState state = mock(OperatorState.class);
-		Map<OperatorID, OperatorState> operatorStates = new HashMap<>();
-		operatorStates.put(new OperatorID(), state);
+        EmptyStreamStateHandle metadata = new EmptyStreamStateHandle();
+        TestCompletedCheckpointStorageLocation location =
+                new TestCompletedCheckpointStorageLocation(metadata, "ptr");
 
-		EmptyStreamStateHandle metadata = new EmptyStreamStateHandle();
-		TestCompletedCheckpointStorageLocation location =
-				new TestCompletedCheckpointStorageLocation(metadata, "ptr");
+        CheckpointProperties props =
+                new CheckpointProperties(
+                        false, CheckpointType.CHECKPOINT, true, false, false, false, false, false);
 
-		CheckpointProperties props = new CheckpointProperties(false, CheckpointType.CHECKPOINT, true, false, false, false, false);
+        CompletedCheckpoint checkpoint =
+                new CompletedCheckpoint(
+                        new JobID(),
+                        0,
+                        0,
+                        1,
+                        operatorStates,
+                        Collections.emptyList(),
+                        props,
+                        location,
+                        null);
 
-		CompletedCheckpoint checkpoint = new CompletedCheckpoint(
-				new JobID(), 0, 0, 1,
-				operatorStates,
-				Collections.emptyList(),
-				props,
-				location);
+        SharedStateRegistry sharedStateRegistry = new SharedStateRegistryImpl();
+        checkpoint.registerSharedStatesAfterRestored(sharedStateRegistry, RestoreMode.DEFAULT);
+        verify(state, times(1)).registerSharedStates(sharedStateRegistry, 0L);
 
-		SharedStateRegistry sharedStateRegistry = new SharedStateRegistry();
-		checkpoint.registerSharedStatesAfterRestored(sharedStateRegistry);
-		verify(state, times(1)).registerSharedStates(sharedStateRegistry);
+        // Subsume
+        checkpoint.markAsDiscardedOnSubsume().discard();
 
-		// Subsume
-		checkpoint.discardOnSubsume();
+        verify(state, times(1)).discardState();
+        assertThat(location.isDisposed()).isTrue();
+        assertThat(metadata.isDisposed()).isTrue();
+    }
 
-		verify(state, times(1)).discardState();
-		assertTrue(location.isDisposed());
-		assertTrue(metadata.isDisposed());
-	}
+    /** Tests that the garbage collection properties are respected when shutting down. */
+    @Test
+    void testCleanUpOnShutdown() throws Exception {
+        JobStatus[] terminalStates =
+                new JobStatus[] {
+                    JobStatus.FINISHED, JobStatus.CANCELED, JobStatus.FAILED, JobStatus.SUSPENDED
+                };
 
-	/**
-	 * Tests that the garbage collection properties are respected when shutting down.
-	 */
-	@Test
-	public void testCleanUpOnShutdown() throws Exception {
-		JobStatus[] terminalStates = new JobStatus[] {
-				JobStatus.FINISHED, JobStatus.CANCELED, JobStatus.FAILED, JobStatus.SUSPENDED
-		};
+        for (JobStatus status : terminalStates) {
 
-		for (JobStatus status : terminalStates) {
+            OperatorState state = mock(OperatorState.class);
+            Map<OperatorID, OperatorState> operatorStates = new HashMap<>();
+            operatorStates.put(new OperatorID(), state);
 
-			OperatorState state = mock(OperatorState.class);
-			Map<OperatorID, OperatorState> operatorStates = new HashMap<>();
-			operatorStates.put(new OperatorID(), state);
+            EmptyStreamStateHandle retainedHandle = new EmptyStreamStateHandle();
+            TestCompletedCheckpointStorageLocation retainedLocation =
+                    new TestCompletedCheckpointStorageLocation(retainedHandle, "ptr");
 
-			EmptyStreamStateHandle retainedHandle = new EmptyStreamStateHandle();
-			TestCompletedCheckpointStorageLocation retainedLocation =
-					new TestCompletedCheckpointStorageLocation(retainedHandle, "ptr");
+            // Keep
+            CheckpointProperties retainProps =
+                    new CheckpointProperties(
+                            false,
+                            CheckpointType.CHECKPOINT,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false);
+            CompletedCheckpoint checkpoint =
+                    new CompletedCheckpoint(
+                            new JobID(),
+                            0,
+                            0,
+                            1,
+                            new HashMap<>(operatorStates),
+                            Collections.emptyList(),
+                            retainProps,
+                            retainedLocation,
+                            null);
 
-			// Keep
-			CheckpointProperties retainProps = new CheckpointProperties(false, CheckpointType.CHECKPOINT, false, false, false, false, false);
-			CompletedCheckpoint checkpoint = new CompletedCheckpoint(
-					new JobID(), 0, 0, 1,
-					new HashMap<>(operatorStates),
-					Collections.emptyList(),
-					retainProps,
-					retainedLocation);
+            checkpoint.markAsDiscardedOnShutdown(status).discard();
 
-			checkpoint.discardOnShutdown(status);
+            verify(state, times(0)).discardState();
+            assertThat(retainedLocation.isDisposed()).isFalse();
+            assertThat(retainedHandle.isDisposed()).isFalse();
 
-			verify(state, times(0)).discardState();
-			assertFalse(retainedLocation.isDisposed());
-			assertFalse(retainedHandle.isDisposed());
+            // Discard
+            EmptyStreamStateHandle discardHandle = new EmptyStreamStateHandle();
+            TestCompletedCheckpointStorageLocation discardLocation =
+                    new TestCompletedCheckpointStorageLocation(discardHandle, "ptr");
 
-			// Discard
-			EmptyStreamStateHandle discardHandle = new EmptyStreamStateHandle();
-			TestCompletedCheckpointStorageLocation discardLocation =
-					new TestCompletedCheckpointStorageLocation(discardHandle, "ptr");
+            // Keep
+            CheckpointProperties discardProps =
+                    new CheckpointProperties(
+                            false, CheckpointType.CHECKPOINT, true, true, true, true, true, false);
 
-			// Keep
-			CheckpointProperties discardProps = new CheckpointProperties(false, CheckpointType.CHECKPOINT, true, true, true, true, true);
+            checkpoint =
+                    new CompletedCheckpoint(
+                            new JobID(),
+                            0,
+                            0,
+                            1,
+                            new HashMap<>(operatorStates),
+                            Collections.emptyList(),
+                            discardProps,
+                            discardLocation,
+                            null);
 
-			checkpoint = new CompletedCheckpoint(
-					new JobID(), 0, 0, 1,
-					new HashMap<>(operatorStates),
-					Collections.emptyList(),
-					discardProps,
-					discardLocation);
+            checkpoint.markAsDiscardedOnShutdown(status).discard();
 
-			checkpoint.discardOnShutdown(status);
+            verify(state, times(1)).discardState();
+            assertThat(discardLocation.isDisposed()).isTrue();
+            assertThat(discardHandle.isDisposed()).isTrue();
+        }
+    }
 
-			verify(state, times(1)).discardState();
-			assertTrue(discardLocation.isDisposed());
-			assertTrue(discardHandle.isDisposed());
-		}
-	}
+    /** Tests that the stats callbacks happen if the callback is registered. */
+    @Test
+    void testCompletedCheckpointStatsCallbacks() throws Exception {
+        Map<JobVertexID, TaskStateStats> taskStats = new HashMap<>();
+        JobVertexID jobVertexId = new JobVertexID();
+        taskStats.put(jobVertexId, new TaskStateStats(jobVertexId, 1));
+        CompletedCheckpointStats checkpointStats =
+                new CompletedCheckpointStats(
+                        1,
+                        0,
+                        CheckpointProperties.forCheckpoint(
+                                CheckpointRetentionPolicy.NEVER_RETAIN_AFTER_TERMINATION),
+                        1,
+                        taskStats,
+                        1,
+                        1,
+                        1,
+                        1,
+                        true,
+                        mock(SubtaskStateStats.class),
+                        null);
+        CompletedCheckpoint completed =
+                new CompletedCheckpoint(
+                        new JobID(),
+                        0,
+                        0,
+                        1,
+                        Collections.emptyMap(),
+                        Collections.emptyList(),
+                        CheckpointProperties.forCheckpoint(
+                                CheckpointRetentionPolicy.NEVER_RETAIN_AFTER_TERMINATION),
+                        new TestCompletedCheckpointStorageLocation(),
+                        checkpointStats);
 
-	/**
-	 * Tests that the stats callbacks happen if the callback is registered.
-	 */
-	@Test
-	public void testCompletedCheckpointStatsCallbacks() throws Exception {
-		CompletedCheckpoint completed = new CompletedCheckpoint(
-			new JobID(),
-			0,
-			0,
-			1,
-			Collections.emptyMap(),
-			Collections.emptyList(),
-			CheckpointProperties.forCheckpoint(CheckpointRetentionPolicy.NEVER_RETAIN_AFTER_TERMINATION),
-			new TestCompletedCheckpointStorageLocation());
+        completed.markAsDiscardedOnShutdown(JobStatus.FINISHED).discard();
+        assertThat(checkpointStats.isDiscarded()).isTrue();
+    }
 
-		CompletedCheckpointStats.DiscardCallback callback = mock(CompletedCheckpointStats.DiscardCallback.class);
-		completed.setDiscardCallback(callback);
+    @Test
+    void testIsJavaSerializable() throws Exception {
+        TaskStateStats task1 = new TaskStateStats(new JobVertexID(), 3);
+        TaskStateStats task2 = new TaskStateStats(new JobVertexID(), 4);
 
-		completed.discardOnShutdown(JobStatus.FINISHED);
-		verify(callback, times(1)).notifyDiscardedCheckpoint();
-	}
+        HashMap<JobVertexID, TaskStateStats> taskStats = new HashMap<>();
+        taskStats.put(task1.getJobVertexId(), task1);
+        taskStats.put(task2.getJobVertexId(), task2);
 
-	@Test
-	public void testIsJavaSerializable() throws Exception {
-		TaskStateStats task1 = new TaskStateStats(new JobVertexID(), 3);
-		TaskStateStats task2 = new TaskStateStats(new JobVertexID(), 4);
+        CompletedCheckpointStats completed =
+                new CompletedCheckpointStats(
+                        123123123L,
+                        10123L,
+                        CheckpointProperties.forCheckpoint(
+                                CheckpointRetentionPolicy.NEVER_RETAIN_AFTER_TERMINATION),
+                        1337,
+                        taskStats,
+                        1337,
+                        123129837912L,
+                        42L,
+                        44L,
+                        true,
+                        new SubtaskStateStats(
+                                123, 213123, 123123, 123123, 0, 0, 0, 0, 0, 0, false, true),
+                        null);
 
-		HashMap<JobVertexID, TaskStateStats> taskStats = new HashMap<>();
-		taskStats.put(task1.getJobVertexId(), task1);
-		taskStats.put(task2.getJobVertexId(), task2);
+        CompletedCheckpointStats copy = CommonTestUtils.createCopySerializable(completed);
 
-		CompletedCheckpointStats completed = new CompletedCheckpointStats(
-			123123123L,
-			10123L,
-			CheckpointProperties.forCheckpoint(CheckpointRetentionPolicy.NEVER_RETAIN_AFTER_TERMINATION),
-			1337,
-			taskStats,
-			1337,
-			123129837912L,
-			new SubtaskStateStats(123, 213123, 123123, 0, 0, 0, 0),
-			null);
-
-		CompletedCheckpointStats copy = CommonTestUtils.createCopySerializable(completed);
-
-		assertEquals(completed.getCheckpointId(), copy.getCheckpointId());
-		assertEquals(completed.getTriggerTimestamp(), copy.getTriggerTimestamp());
-		assertEquals(completed.getProperties(), copy.getProperties());
-		assertEquals(completed.getNumberOfSubtasks(), copy.getNumberOfSubtasks());
-		assertEquals(completed.getNumberOfAcknowledgedSubtasks(), copy.getNumberOfAcknowledgedSubtasks());
-		assertEquals(completed.getEndToEndDuration(), copy.getEndToEndDuration());
-		assertEquals(completed.getStateSize(), copy.getStateSize());
-		assertEquals(completed.getLatestAcknowledgedSubtaskStats().getSubtaskIndex(), copy.getLatestAcknowledgedSubtaskStats().getSubtaskIndex());
-		assertEquals(completed.getStatus(), copy.getStatus());
-	}
+        assertThat(copy.getCheckpointId()).isEqualTo(completed.getCheckpointId());
+        assertThat(copy.getTriggerTimestamp()).isEqualTo(completed.getTriggerTimestamp());
+        assertThat(copy.getProperties()).isEqualTo(completed.getProperties());
+        assertThat(copy.getNumberOfSubtasks()).isEqualTo(completed.getNumberOfSubtasks());
+        assertThat(copy.getNumberOfAcknowledgedSubtasks())
+                .isEqualTo(completed.getNumberOfAcknowledgedSubtasks());
+        assertThat(copy.getEndToEndDuration()).isEqualTo(completed.getEndToEndDuration());
+        assertThat(copy.getStateSize()).isEqualTo(completed.getStateSize());
+        assertThat(copy.getProcessedData()).isEqualTo(completed.getProcessedData());
+        assertThat(copy.getPersistedData()).isEqualTo(completed.getPersistedData());
+        assertThat(copy.isUnalignedCheckpoint()).isEqualTo(completed.isUnalignedCheckpoint());
+        assertThat(copy.getLatestAcknowledgedSubtaskStats().getSubtaskIndex())
+                .isEqualTo(completed.getLatestAcknowledgedSubtaskStats().getSubtaskIndex());
+        assertThat(copy.getStatus()).isEqualTo(completed.getStatus());
+    }
 }

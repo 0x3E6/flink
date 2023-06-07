@@ -28,98 +28,107 @@ import org.apache.flink.kubernetes.kubeclient.Fabric8FlinkKubeClient;
 import org.apache.flink.kubernetes.kubeclient.FlinkKubeClient;
 import org.apache.flink.kubernetes.utils.Constants;
 import org.apache.flink.runtime.clusterframework.BootstrapTools;
-import org.apache.flink.runtime.concurrent.Executors;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.concurrent.Executors;
 
-import io.fabric8.kubernetes.client.KubernetesClient;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.rules.TemporaryFolder;
+import io.fabric8.kubernetes.client.NamespacedKubernetesClient;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 
-/**
- * Base test class for Kubernetes.
- */
-public class KubernetesTestBase extends TestLogger {
+/** Base test class for Kubernetes. */
+public class KubernetesTestBase {
+    @RegisterExtension
+    protected final MixedKubernetesServerExtension server =
+            new MixedKubernetesServerExtension(true, true);
 
-	protected static final String NAMESPACE = "test";
-	protected static final String CLUSTER_ID = "my-flink-cluster1";
-	protected static final String CONTAINER_IMAGE = "flink-k8s-test:latest";
-	protected static final KubernetesConfigOptions.ImagePullPolicy CONTAINER_IMAGE_PULL_POLICY =
-		KubernetesConfigOptions.ImagePullPolicy.IfNotPresent;
-	protected static final int JOB_MANAGER_MEMORY = 768;
+    protected static final String NAMESPACE = "test";
+    protected static final String CLUSTER_ID = "my-flink-cluster1";
+    protected static final String CONTAINER_IMAGE = "flink-k8s-test:latest";
+    protected static final String KEYTAB_FILE = "keytab";
+    protected static final String KRB5_CONF_FILE = "krb5.conf";
+    protected static final KubernetesConfigOptions.ImagePullPolicy CONTAINER_IMAGE_PULL_POLICY =
+            KubernetesConfigOptions.ImagePullPolicy.IfNotPresent;
+    protected static final int JOB_MANAGER_MEMORY = 768;
 
-	@Rule
-	public MixedKubernetesServer server = new MixedKubernetesServer(true, true);
+    protected File flinkConfDir;
 
-	@Rule
-	public TemporaryFolder temporaryFolder = new TemporaryFolder();
+    protected File hadoopConfDir;
 
-	protected File flinkConfDir;
+    protected File kerberosDir;
 
-	protected File hadoopConfDir;
+    protected final Configuration flinkConfig = new Configuration();
 
-	protected final Configuration flinkConfig = new Configuration();
+    protected NamespacedKubernetesClient kubeClient;
 
-	protected KubernetesClient kubeClient;
+    protected FlinkKubeClient flinkKubeClient;
 
-	protected FlinkKubeClient flinkKubeClient;
+    protected void setupFlinkConfig() {
+        flinkConfig.setString(KubernetesConfigOptions.NAMESPACE, NAMESPACE);
+        flinkConfig.setString(KubernetesConfigOptions.CLUSTER_ID, CLUSTER_ID);
+        flinkConfig.setString(KubernetesConfigOptions.CONTAINER_IMAGE, CONTAINER_IMAGE);
+        flinkConfig.set(
+                KubernetesConfigOptions.CONTAINER_IMAGE_PULL_POLICY, CONTAINER_IMAGE_PULL_POLICY);
+        flinkConfig.set(
+                JobManagerOptions.TOTAL_PROCESS_MEMORY, MemorySize.ofMebiBytes(JOB_MANAGER_MEMORY));
+        flinkConfig.set(DeploymentOptionsInternal.CONF_DIR, flinkConfDir.toString());
+    }
 
-	protected void setupFlinkConfig() {
-		flinkConfig.setString(KubernetesConfigOptions.NAMESPACE, NAMESPACE);
-		flinkConfig.setString(KubernetesConfigOptions.CLUSTER_ID, CLUSTER_ID);
-		flinkConfig.setString(KubernetesConfigOptions.CONTAINER_IMAGE, CONTAINER_IMAGE);
-		flinkConfig.set(KubernetesConfigOptions.CONTAINER_IMAGE_PULL_POLICY, CONTAINER_IMAGE_PULL_POLICY);
-		flinkConfig.set(JobManagerOptions.TOTAL_PROCESS_MEMORY, MemorySize.ofMebiBytes(JOB_MANAGER_MEMORY));
-		flinkConfig.set(DeploymentOptionsInternal.CONF_DIR, flinkConfDir.toString());
-	}
+    protected void onSetup() throws Exception {}
 
-	protected void onSetup() throws Exception {
-	}
+    @BeforeEach
+    void setup(@TempDir File flinkConfDir, @TempDir File hadoopConfDir, @TempDir File kerberosDir)
+            throws Exception {
+        this.flinkConfDir = flinkConfDir.getAbsoluteFile();
+        this.hadoopConfDir = hadoopConfDir.getAbsoluteFile();
+        this.kerberosDir = kerberosDir.getAbsoluteFile();
 
-	@Before
-	public final void setup() throws Exception {
-		flinkConfDir = temporaryFolder.newFolder().getAbsoluteFile();
-		hadoopConfDir = temporaryFolder.newFolder().getAbsoluteFile();
+        setupFlinkConfig();
+        writeFlinkConfiguration();
 
-		setupFlinkConfig();
-		writeFlinkConfiguration();
+        kubeClient = server.createClient().inNamespace(NAMESPACE);
+        flinkKubeClient =
+                new Fabric8FlinkKubeClient(
+                        flinkConfig, kubeClient, Executors.newDirectExecutorService());
 
-		kubeClient = server.getClient().inNamespace(NAMESPACE);
-		flinkKubeClient = new Fabric8FlinkKubeClient(flinkConfig, kubeClient, Executors::newDirectExecutorService);
+        onSetup();
+    }
 
-		onSetup();
-	}
+    @AfterEach
+    void tearDown() throws Exception {
+        flinkKubeClient.close();
+    }
 
-	@After
-	public void tearDown() throws Exception {
-		flinkKubeClient.close();
-	}
+    protected void writeFlinkConfiguration() throws IOException {
+        BootstrapTools.writeConfiguration(
+                this.flinkConfig, new File(flinkConfDir, "flink-conf.yaml"));
+    }
 
-	protected void writeFlinkConfiguration() throws IOException {
-		BootstrapTools.writeConfiguration(this.flinkConfig, new File(flinkConfDir, "flink-conf.yaml"));
-	}
+    protected Map<String, String> getCommonLabels() {
+        Map<String, String> labels = new HashMap<>();
+        labels.put(Constants.LABEL_TYPE_KEY, Constants.LABEL_TYPE_NATIVE_TYPE);
+        labels.put(Constants.LABEL_APP_KEY, CLUSTER_ID);
+        return labels;
+    }
 
-	protected Map<String, String> getCommonLabels() {
-		Map<String, String> labels = new HashMap<>();
-		labels.put(Constants.LABEL_TYPE_KEY, Constants.LABEL_TYPE_NATIVE_TYPE);
-		labels.put(Constants.LABEL_APP_KEY, CLUSTER_ID);
-		return labels;
-	}
+    protected void setHadoopConfDirEnv() {
+        Map<String, String> map = new HashMap<>();
+        map.put(Constants.ENV_HADOOP_CONF_DIR, hadoopConfDir.toString());
+        CommonTestUtils.setEnv(map, false);
+    }
 
-	protected void setHadoopConfDirEnv() {
-		Map<String, String> map = new HashMap<>();
-		map.put(Constants.ENV_HADOOP_CONF_DIR, hadoopConfDir.toString());
-		CommonTestUtils.setEnv(map, false);
-	}
+    protected void generateHadoopConfFileItems() throws IOException {
+        KubernetesTestUtils.createTemporyFile("some data", hadoopConfDir, "core-site.xml");
+        KubernetesTestUtils.createTemporyFile("some data", hadoopConfDir, "hdfs-site.xml");
+    }
 
-	protected void generateHadoopConfFileItems() throws IOException {
-		KubernetesTestUtils.createTemporyFile("some data", hadoopConfDir, "core-site.xml");
-		KubernetesTestUtils.createTemporyFile("some data", hadoopConfDir, "hdfs-site.xml");
-	}
+    protected void generateKerberosFileItems() throws IOException {
+        KubernetesTestUtils.createTemporyFile("some keytab", kerberosDir, KEYTAB_FILE);
+        KubernetesTestUtils.createTemporyFile("some conf", kerberosDir, KRB5_CONF_FILE);
+    }
 }

@@ -18,17 +18,15 @@
 
 package org.apache.flink.api.scala.typeutils;
 
+import org.apache.flink.FlinkVersion;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.common.typeutils.TypeSerializerMatchers;
 import org.apache.flink.api.common.typeutils.TypeSerializerSchemaCompatibility;
 import org.apache.flink.api.common.typeutils.TypeSerializerUpgradeTestBase;
 import org.apache.flink.api.common.typeutils.base.IntSerializer;
 import org.apache.flink.api.common.typeutils.base.StringSerializer;
-import org.apache.flink.testutils.migration.MigrationVersion;
 
 import org.hamcrest.Matcher;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -38,70 +36,66 @@ import scala.util.Right;
 
 import static org.hamcrest.Matchers.is;
 
-/**
- * A {@link TypeSerializerUpgradeTestBase} for {@link ScalaEitherSerializerSnapshot}.
- */
-@RunWith(Parameterized.class)
-public class ScalaEitherSerializerUpgradeTest extends TypeSerializerUpgradeTestBase<Either<Integer, String>, Either<Integer, String>> {
+/** A {@link TypeSerializerUpgradeTestBase} for {@link ScalaEitherSerializerSnapshot}. */
+class ScalaEitherSerializerUpgradeTest
+        extends TypeSerializerUpgradeTestBase<Either<Integer, String>, Either<Integer, String>> {
 
-	private static final String SPEC_NAME = "scala-either-serializer";
+    private static final String SPEC_NAME = "scala-either-serializer";
 
-	public ScalaEitherSerializerUpgradeTest(TestSpecification<Either<Integer, String>, Either<Integer, String>> testSpecification) {
-		super(testSpecification);
-	}
+    public Collection<TestSpecification<?, ?>> createTestSpecifications(FlinkVersion flinkVersion)
+            throws Exception {
 
-	@Parameterized.Parameters(name = "Test Specification = {0}")
-	public static Collection<TestSpecification<?, ?>> testSpecifications() throws Exception {
+        ArrayList<TestSpecification<?, ?>> testSpecifications = new ArrayList<>();
+        testSpecifications.add(
+                new TestSpecification<>(
+                        SPEC_NAME,
+                        flinkVersion,
+                        EitherSerializerSetup.class,
+                        EitherSerializerVerifier.class));
+        return testSpecifications;
+    }
 
-		ArrayList<TestSpecification<?, ?>> testSpecifications = new ArrayList<>();
-		for (MigrationVersion migrationVersion : MIGRATION_VERSIONS) {
-			testSpecifications.add(
-				new TestSpecification<>(
-					SPEC_NAME,
-					migrationVersion,
-					EitherSerializerSetup.class,
-					EitherSerializerVerifier.class));
-		}
-		return testSpecifications;
-	}
+    // ----------------------------------------------------------------------------------------------
+    //  Specification for "either-serializer-left"
+    // ----------------------------------------------------------------------------------------------
 
-	// ----------------------------------------------------------------------------------------------
-	//  Specification for "either-serializer-left"
-	// ----------------------------------------------------------------------------------------------
+    /**
+     * This class is only public to work with {@link
+     * org.apache.flink.api.common.typeutils.ClassRelocator}.
+     */
+    public static final class EitherSerializerSetup
+            implements TypeSerializerUpgradeTestBase.PreUpgradeSetup<Either<Integer, String>> {
+        @Override
+        public TypeSerializer<Either<Integer, String>> createPriorSerializer() {
+            return new EitherSerializer<>(IntSerializer.INSTANCE, StringSerializer.INSTANCE);
+        }
 
-	/**
-	 * This class is only public to work with {@link org.apache.flink.api.common.typeutils.ClassRelocator}.
-	 */
-	public static final class EitherSerializerSetup implements TypeSerializerUpgradeTestBase.PreUpgradeSetup<Either<Integer, String>> {
-		@Override
-		public TypeSerializer<Either<Integer, String>> createPriorSerializer() {
-			return new EitherSerializer<>(IntSerializer.INSTANCE, StringSerializer.INSTANCE);
-		}
+        @Override
+        public Either<Integer, String> createTestData() {
+            return new Right<>("Hello world");
+        }
+    }
 
-		@Override
-		public Either<Integer, String> createTestData() {
-			return new Right<>("Hello world");
-		}
-	}
+    /**
+     * This class is only public to work with {@link
+     * org.apache.flink.api.common.typeutils.ClassRelocator}.
+     */
+    public static final class EitherSerializerVerifier
+            implements TypeSerializerUpgradeTestBase.UpgradeVerifier<Either<Integer, String>> {
+        @Override
+        public TypeSerializer<Either<Integer, String>> createUpgradedSerializer() {
+            return new EitherSerializer<>(IntSerializer.INSTANCE, StringSerializer.INSTANCE);
+        }
 
-	/**
-	 * This class is only public to work with {@link org.apache.flink.api.common.typeutils.ClassRelocator}.
-	 */
-	public static final class EitherSerializerVerifier implements TypeSerializerUpgradeTestBase.UpgradeVerifier<Either<Integer, String>> {
-		@Override
-		public TypeSerializer<Either<Integer, String>> createUpgradedSerializer() {
-			return new EitherSerializer<>(IntSerializer.INSTANCE, StringSerializer.INSTANCE);
-		}
+        @Override
+        public Matcher<Either<Integer, String>> testDataMatcher() {
+            return is(new Right<>("Hello world"));
+        }
 
-		@Override
-		public Matcher<Either<Integer, String>> testDataMatcher() {
-			return is(new Right<>("Hello world"));
-		}
-
-		@Override
-		public Matcher<TypeSerializerSchemaCompatibility<Either<Integer, String>>> schemaCompatibilityMatcher(MigrationVersion version) {
-			return TypeSerializerMatchers.isCompatibleAsIs();
-		}
-	}
-
+        @Override
+        public Matcher<TypeSerializerSchemaCompatibility<Either<Integer, String>>>
+                schemaCompatibilityMatcher(FlinkVersion version) {
+            return TypeSerializerMatchers.isCompatibleAsIs();
+        }
+    }
 }

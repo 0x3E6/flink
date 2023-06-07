@@ -24,54 +24,56 @@ import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.api.java.tuple.Tuple2;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Tests for {@link PlanGenerator}.
- */
-public class PlanGeneratorTest {
+/** Tests for {@link PlanGenerator}. */
+class PlanGeneratorTest {
 
-	@Test
-	public void testGenerate() {
+    @Test
+    void testGenerate() {
 
-		final String fileA = "fileA";
-		final String fileB = "fileB";
+        final String fileA = "fileA";
+        final String fileB = "fileB";
 
-		final Map<String, DistributedCache.DistributedCacheEntry> originalArtifacts = Stream.of(
-				Tuple2.of(fileA, new DistributedCache.DistributedCacheEntry("test1", true)),
-				Tuple2.of(fileB, new DistributedCache.DistributedCacheEntry("test2", false))
-		).collect(Collectors.toMap(x -> x.f0, x -> x.f1));
+        final Map<String, DistributedCache.DistributedCacheEntry> originalArtifacts =
+                Stream.of(
+                                Tuple2.of(
+                                        fileA,
+                                        new DistributedCache.DistributedCacheEntry("test1", true)),
+                                Tuple2.of(
+                                        fileB,
+                                        new DistributedCache.DistributedCacheEntry("test2", false)))
+                        .collect(Collectors.toMap(x -> x.f0, x -> x.f1));
 
-		final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
-		env.setParallelism(10);
-		env.registerCachedFile("test1", fileA, true);
-		env.registerCachedFile("test2", fileB, false);
+        final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(10);
+        env.registerCachedFile("test1", fileA, true);
+        env.registerCachedFile("test2", fileB, false);
 
-		env.fromElements(1, 3, 5)
-				.map((MapFunction<Integer, String>) value -> String.valueOf(value + 1))
-				.writeAsText("/tmp/csv");
+        env.fromElements(1, 3, 5)
+                .map((MapFunction<Integer, String>) value -> String.valueOf(value + 1))
+                .writeAsText("/tmp/csv");
 
-		final Plan generatedPlanUnderTest = env.createProgramPlan("test");
+        final Plan generatedPlanUnderTest = env.createProgramPlan("test");
 
-		final Map<String, DistributedCache.DistributedCacheEntry> retrievedArtifacts =
-				generatedPlanUnderTest
-						.getCachedFiles()
-						.stream()
-						.collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+        final Map<String, DistributedCache.DistributedCacheEntry> retrievedArtifacts =
+                generatedPlanUnderTest.getCachedFiles().stream()
+                        .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
 
-		assertEquals(1, generatedPlanUnderTest.getDataSinks().size());
-		assertEquals(10, generatedPlanUnderTest.getDefaultParallelism());
-		assertEquals(env.getConfig(), generatedPlanUnderTest.getExecutionConfig());
-		assertEquals("test", generatedPlanUnderTest.getJobName());
+        assertThat(generatedPlanUnderTest.getDataSinks()).hasSize(1);
+        assertThat(generatedPlanUnderTest.getDefaultParallelism()).isEqualTo(10);
+        assertThat(generatedPlanUnderTest.getExecutionConfig()).isEqualTo(env.getConfig());
+        assertThat(generatedPlanUnderTest.getJobName()).isEqualTo("test");
 
-		assertEquals(originalArtifacts.size(), retrievedArtifacts.size());
-		assertEquals(originalArtifacts.get(fileA), retrievedArtifacts.get(fileA));
-		assertEquals(originalArtifacts.get(fileB), retrievedArtifacts.get(fileB));
-	}
+        assertThat(retrievedArtifacts)
+                .hasSameSizeAs(originalArtifacts)
+                .containsEntry(fileA, originalArtifacts.get(fileA))
+                .containsEntry(fileB, originalArtifacts.get(fileB));
+    }
 }

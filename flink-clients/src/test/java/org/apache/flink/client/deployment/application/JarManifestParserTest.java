@@ -20,14 +20,12 @@ package org.apache.flink.client.deployment.application;
 
 import org.apache.flink.client.program.PackagedProgram;
 import org.apache.flink.client.testjar.TestJob;
-import org.apache.flink.util.TestLogger;
 
-import org.apache.flink.shaded.guava18.com.google.common.collect.ImmutableList;
-import org.apache.flink.shaded.guava18.com.google.common.collect.ImmutableMap;
+import org.apache.flink.shaded.guava30.com.google.common.collect.ImmutableList;
+import org.apache.flink.shaded.guava30.com.google.common.collect.ImmutableMap;
 
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.BufferedOutputStream;
 import java.io.File;
@@ -41,120 +39,147 @@ import java.util.Optional;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-import static org.hamcrest.CoreMatchers.equalTo;
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/**
- * Tests for JAR file manifest parsing.
- */
-public class JarManifestParserTest extends TestLogger {
+/** Tests for JAR file manifest parsing. */
+public class JarManifestParserTest {
 
-	@Rule
-	public final TemporaryFolder temporaryFolder = new TemporaryFolder();
+    @TempDir java.nio.file.Path temporaryFolder;
 
-	@Test
-	public void testFindEntryClassNoEntry() throws IOException {
-		File jarFile = createJarFileWithManifest(ImmutableMap.of());
+    @Test
+    void testFindEntryClassNoEntry() throws IOException {
+        File jarFile = createJarFileWithManifest(ImmutableMap.of());
 
-		Optional<String> entry = JarManifestParser.findEntryClass(jarFile);
+        Optional<String> entry = JarManifestParser.findEntryClass(jarFile);
 
-		assertFalse(entry.isPresent());
-	}
+        assertThat(entry).isNotPresent();
+    }
 
-	@Test
-	public void testFindEntryClassAssemblerClass() throws IOException {
-		File jarFile = createJarFileWithManifest(ImmutableMap.of(
-			PackagedProgram.MANIFEST_ATTRIBUTE_ASSEMBLER_CLASS, "AssemblerClass"));
+    @Test
+    void testFindEntryClassAssemblerClass() throws IOException {
+        File jarFile =
+                createJarFileWithManifest(
+                        ImmutableMap.of(
+                                PackagedProgram.MANIFEST_ATTRIBUTE_ASSEMBLER_CLASS,
+                                "AssemblerClass"));
 
-		Optional<String> entry = JarManifestParser.findEntryClass(jarFile);
+        Optional<String> entry = JarManifestParser.findEntryClass(jarFile);
 
-		assertTrue(entry.isPresent());
-		assertThat(entry.get(), is(equalTo("AssemblerClass")));
-	}
+        assertThat(entry).get().isEqualTo("AssemblerClass");
+    }
 
-	@Test
-	public void testFindEntryClassMainClass() throws IOException {
-		File jarFile = createJarFileWithManifest(ImmutableMap.of(
-			PackagedProgram.MANIFEST_ATTRIBUTE_MAIN_CLASS, "MainClass"));
+    @Test
+    void testFindEntryClassMainClass() throws IOException {
+        File jarFile =
+                createJarFileWithManifest(
+                        ImmutableMap.of(
+                                PackagedProgram.MANIFEST_ATTRIBUTE_MAIN_CLASS, "MainClass"));
 
-		Optional<String> entry = JarManifestParser.findEntryClass(jarFile);
+        Optional<String> entry = JarManifestParser.findEntryClass(jarFile);
 
-		assertTrue(entry.isPresent());
-		assertThat(entry.get(), is(equalTo("MainClass")));
-	}
+        assertThat(entry).get().isEqualTo("MainClass");
+    }
 
-	@Test
-	public void testFindEntryClassAssemblerClassAndMainClass() throws IOException {
-		// We want the assembler class entry to have precedence over main class
-		File jarFile = createJarFileWithManifest(ImmutableMap.of(
-			PackagedProgram.MANIFEST_ATTRIBUTE_ASSEMBLER_CLASS, "AssemblerClass",
-			PackagedProgram.MANIFEST_ATTRIBUTE_MAIN_CLASS, "MainClass"));
+    @Test
+    void testFindEntryClassAssemblerClassAndMainClass() throws IOException {
+        // We want the assembler class entry to have precedence over main class
+        File jarFile =
+                createJarFileWithManifest(
+                        ImmutableMap.of(
+                                PackagedProgram.MANIFEST_ATTRIBUTE_ASSEMBLER_CLASS,
+                                "AssemblerClass",
+                                PackagedProgram.MANIFEST_ATTRIBUTE_MAIN_CLASS,
+                                "MainClass"));
 
-		Optional<String> entry = JarManifestParser.findEntryClass(jarFile);
+        Optional<String> entry = JarManifestParser.findEntryClass(jarFile);
 
-		assertTrue(entry.isPresent());
-		assertThat(entry.get(), is(equalTo("AssemblerClass")));
-	}
+        assertThat(entry).isPresent().get().isEqualTo("AssemblerClass");
+    }
 
-	@Test
-	public void testFindEntryClassWithTestJobJar() throws IOException {
-		File jarFile = TestJob.getTestJobJar();
+    @Test
+    void testFindEntryClassWithTestJobJar() throws IOException {
+        File jarFile = TestJob.getTestJobJar();
 
-		Optional<String> entryClass = JarManifestParser.findEntryClass(jarFile);
+        Optional<String> entryClass = JarManifestParser.findEntryClass(jarFile);
 
-		assertTrue(entryClass.isPresent());
-		assertThat(entryClass.get(), is(equalTo(TestJob.class.getCanonicalName())));
-	}
+        assertThat(entryClass).get().isEqualTo(TestJob.class.getCanonicalName());
+    }
 
-	@Test(expected = NoSuchElementException.class)
-	public void testFindOnlyEntryClassEmptyArgument() throws IOException {
-		JarManifestParser.findOnlyEntryClass(Collections.emptyList());
-	}
+    @Test
+    void testFindOnlyEntryClassEmptyArgument() {
+        assertThatThrownBy(() -> JarManifestParser.findOnlyEntryClass(Collections.emptyList()))
+                .isInstanceOf(NoSuchElementException.class);
+    }
 
-	@Test(expected = NoSuchElementException.class)
-	public void testFindOnlyEntryClassSingleJarWithNoManifest() throws IOException {
-		File jarWithNoManifest = createJarFileWithManifest(ImmutableMap.of());
-		JarManifestParser.findOnlyEntryClass(ImmutableList.of(jarWithNoManifest));
-	}
+    @Test
+    void testFindOnlyEntryClassSingleJarWithNoManifest() {
+        assertThatThrownBy(
+                        () -> {
+                            File jarWithNoManifest = createJarFileWithManifest(ImmutableMap.of());
+                            JarManifestParser.findOnlyEntryClass(
+                                    ImmutableList.of(jarWithNoManifest));
+                        })
+                .isInstanceOf(NoSuchElementException.class);
+    }
 
-	@Test
-	public void testFindOnlyEntryClassSingleJar() throws IOException {
-		File jarFile = TestJob.getTestJobJar();
+    @Test
+    void testFindOnlyEntryClassSingleJar() throws IOException {
+        File jarFile = TestJob.getTestJobJar();
 
-		JarManifestParser.JarFileWithEntryClass jarFileWithEntryClass = JarManifestParser.findOnlyEntryClass(ImmutableList.of(jarFile));
+        JarManifestParser.JarFileWithEntryClass jarFileWithEntryClass =
+                JarManifestParser.findOnlyEntryClass(ImmutableList.of(jarFile));
 
-		assertThat(jarFileWithEntryClass.getEntryClass(), is(equalTo(TestJob.class.getCanonicalName())));
-	}
+        assertThat(jarFileWithEntryClass.getEntryClass())
+                .isEqualTo(TestJob.class.getCanonicalName());
+    }
 
-	@Test(expected = IllegalArgumentException.class)
-	public void testFindOnlyEntryClassMultipleJarsWithMultipleManifestEntries() throws IOException {
-		File jarFile = TestJob.getTestJobJar();
+    @Test
+    void testFindOnlyEntryClassMultipleJarsWithMultipleManifestEntries() throws IOException {
+        assertThatThrownBy(
+                        () -> {
+                            File jarFile = TestJob.getTestJobJar();
+                            JarManifestParser.findOnlyEntryClass(
+                                    ImmutableList.of(jarFile, jarFile, jarFile));
+                        })
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 
-		JarManifestParser.findOnlyEntryClass(ImmutableList.of(jarFile, jarFile, jarFile));
-	}
+    @Test
+    void testFindOnlyEntryClassMultipleJarsWithSingleManifestEntry() throws IOException {
+        File jarWithNoManifest = createJarFileWithManifest(ImmutableMap.of());
+        File jarFile = TestJob.getTestJobJar();
 
-	@Test
-	public void testFindOnlyEntryClassMultipleJarsWithSingleManifestEntry() throws IOException {
-		File jarWithNoManifest = createJarFileWithManifest(ImmutableMap.of());
-		File jarFile = TestJob.getTestJobJar();
+        JarManifestParser.JarFileWithEntryClass jarFileWithEntryClass =
+                JarManifestParser.findOnlyEntryClass(ImmutableList.of(jarWithNoManifest, jarFile));
 
-		JarManifestParser.JarFileWithEntryClass jarFileWithEntryClass = JarManifestParser
-			.findOnlyEntryClass(ImmutableList.of(jarWithNoManifest, jarFile));
+        assertThat(jarFileWithEntryClass.getEntryClass())
+                .isEqualTo(TestJob.class.getCanonicalName());
+    }
 
-		assertThat(jarFileWithEntryClass.getEntryClass(), is(equalTo(TestJob.class.getCanonicalName())));
-	}
+    @Test
+    void testFindFirstManifestAttributeWithNoAttribute() throws IOException {
+        assertThat(JarManifestParser.findFirstManifestAttribute(TestJob.getTestJobJar())).isEmpty();
+    }
 
-	private File createJarFileWithManifest(Map<String, String> manifest) throws IOException {
-		final File jarFile = temporaryFolder.newFile();
-		try (ZipOutputStream zos = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(jarFile)));
-				PrintWriter pw = new PrintWriter(zos)) {
-			zos.putNextEntry(new ZipEntry("META-INF/MANIFEST.MF"));
-			manifest.forEach((key, value) -> pw.println(String.format("%s: %s", key, value)));
-		}
-		return jarFile;
-	}
+    @Test
+    void testFindFirstManifestAttributeWithAttributes() throws IOException {
+        Optional<String> optionalValue =
+                JarManifestParser.findFirstManifestAttribute(
+                        TestJob.getTestJobJar(), PackagedProgram.MANIFEST_ATTRIBUTE_MAIN_CLASS);
 
+        assertThat(optionalValue).get().isEqualTo("org.apache.flink.client.testjar.TestJob");
+    }
+
+    private File createJarFileWithManifest(Map<String, String> manifest) throws IOException {
+        final File jarFile = temporaryFolder.resolve("test.jar").toFile();
+        try (ZipOutputStream zos =
+                        new ZipOutputStream(
+                                new BufferedOutputStream(new FileOutputStream(jarFile)));
+                PrintWriter pw = new PrintWriter(zos)) {
+            zos.putNextEntry(new ZipEntry("META-INF/MANIFEST.MF"));
+            manifest.forEach((key, value) -> pw.println(String.format("%s: %s", key, value)));
+        }
+        return jarFile;
+    }
 }

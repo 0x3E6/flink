@@ -18,168 +18,163 @@
 
 package org.apache.flink.formats.avro.typeutils;
 
+import org.apache.flink.FlinkVersion;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.common.typeutils.TypeSerializerMatchers;
 import org.apache.flink.api.common.typeutils.TypeSerializerSchemaCompatibility;
 import org.apache.flink.api.common.typeutils.TypeSerializerUpgradeTestBase;
 import org.apache.flink.formats.avro.generated.Address;
-import org.apache.flink.testutils.migration.MigrationVersion;
 
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
 import org.hamcrest.Matcher;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
 
 import java.util.ArrayList;
 import java.util.Collection;
 
 import static org.hamcrest.Matchers.is;
 
-/**
- * Tests based on {@link TypeSerializerUpgradeTestBase} for the {@link AvroSerializer}.
- */
-@RunWith(Parameterized.class)
-public class AvroSerializerUpgradeTest extends TypeSerializerUpgradeTestBase<Object, Object> {
+/** Tests based on {@link TypeSerializerUpgradeTestBase} for the {@link AvroSerializer}. */
+class AvroSerializerUpgradeTest extends TypeSerializerUpgradeTestBase<Object, Object> {
 
-	public AvroSerializerUpgradeTest(TestSpecification<Object, Object> testSpecification) {
-		super(testSpecification);
-	}
+    public Collection<TestSpecification<?, ?>> createTestSpecifications(FlinkVersion flinkVersion)
+            throws Exception {
+        ArrayList<TestSpecification<?, ?>> testSpecifications = new ArrayList<>();
+        testSpecifications.add(
+                new TestSpecification<>(
+                        "generic-avro-serializer",
+                        flinkVersion,
+                        GenericAvroSerializerSetup.class,
+                        GenericAvroSerializerVerifier.class));
 
-	@Parameterized.Parameters(name = "Test Specification = {0}")
-	public static Collection<TestSpecification<?, ?>> testSpecifications() throws Exception {
-		ArrayList<TestSpecification<?, ?>> testSpecifications = new ArrayList<>();
-		for (MigrationVersion migrationVersion : MIGRATION_VERSIONS) {
-			testSpecifications.add(
-					new TestSpecification<>(
-							"generic-avro-serializer",
-							migrationVersion,
-							GenericAvroSerializerSetup.class,
-							GenericAvroSerializerVerifier.class));
+        testSpecifications.add(
+                new TestSpecification<>(
+                        "specific-avro-serializer",
+                        flinkVersion,
+                        SpecificAvroSerializerSetup.class,
+                        SpecificAvroSerializerVerifier.class));
 
-			testSpecifications.add(
-					new TestSpecification<>(
-							"specific-avro-serializer",
-							migrationVersion,
-							SpecificAvroSerializerSetup.class,
-							SpecificAvroSerializerVerifier.class));
-		}
+        return testSpecifications;
+    }
 
-		return testSpecifications;
-	}
+    // ----------------------------------------------------------------------------------------------
+    //  Specification for "generic-avro-serializer"
+    // ----------------------------------------------------------------------------------------------
 
-	// ----------------------------------------------------------------------------------------------
-	//  Specification for "generic-avro-serializer"
-	// ----------------------------------------------------------------------------------------------
+    /**
+     * This class is only public to work with {@link
+     * org.apache.flink.api.common.typeutils.ClassRelocator}.
+     */
+    public static final class GenericAvroSerializerSetup
+            implements TypeSerializerUpgradeTestBase.PreUpgradeSetup<GenericRecord> {
 
-	/**
-	 * This class is only public to work with {@link org.apache.flink.api.common.typeutils.ClassRelocator}.
-	 */
-	public static final class GenericAvroSerializerSetup implements TypeSerializerUpgradeTestBase.PreUpgradeSetup<GenericRecord> {
+        @Override
+        public TypeSerializer<GenericRecord> createPriorSerializer() {
+            return new AvroSerializer<>(GenericRecord.class, Address.getClassSchema());
+        }
 
-		@Override
-		public TypeSerializer<GenericRecord> createPriorSerializer() {
-			return new AvroSerializer<>(
-					GenericRecord.class,
-					Address.getClassSchema());
-		}
+        @Override
+        public GenericRecord createTestData() {
+            GenericData.Record record = new GenericData.Record(Address.getClassSchema());
+            record.put("num", 239);
+            record.put("street", "Baker Street");
+            record.put("city", "London");
+            record.put("state", "London");
+            record.put("zip", "NW1 6XE");
+            return record;
+        }
+    }
 
-		@Override
-		public GenericRecord createTestData() {
-			GenericData.Record record = new GenericData.Record(Address.getClassSchema());
-			record.put("num", 239);
-			record.put("street", "Baker Street");
-			record.put("city", "London");
-			record.put("state", "London");
-			record.put("zip", "NW1 6XE");
-			return record;
-		}
-	}
+    /**
+     * This class is only public to work with {@link
+     * org.apache.flink.api.common.typeutils.ClassRelocator}.
+     */
+    public static final class GenericAvroSerializerVerifier
+            implements TypeSerializerUpgradeTestBase.UpgradeVerifier<GenericRecord> {
 
-	/**
-	 * This class is only public to work with {@link org.apache.flink.api.common.typeutils.ClassRelocator}.
-	 */
-	public static final class GenericAvroSerializerVerifier implements TypeSerializerUpgradeTestBase.UpgradeVerifier<GenericRecord> {
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        @Override
+        public TypeSerializer<GenericRecord> createUpgradedSerializer() {
+            return new AvroSerializer(GenericRecord.class, Address.getClassSchema());
+        }
 
-		@SuppressWarnings({"unchecked", "rawtypes"})
-		@Override
-		public TypeSerializer<GenericRecord> createUpgradedSerializer() {
-			return new AvroSerializer(
-					GenericRecord.class,
-					Address.getClassSchema());
-		}
+        @Override
+        public Matcher<GenericRecord> testDataMatcher() {
+            GenericData.Record record = new GenericData.Record(Address.getClassSchema());
+            record.put("num", 239);
+            record.put("street", "Baker Street");
+            record.put("city", "London");
+            record.put("state", "London");
+            record.put("zip", "NW1 6XE");
+            return is(record);
+        }
 
-		@Override
-		public Matcher<GenericRecord> testDataMatcher() {
-			GenericData.Record record = new GenericData.Record(Address.getClassSchema());
-			record.put("num", 239);
-			record.put("street", "Baker Street");
-			record.put("city", "London");
-			record.put("state", "London");
-			record.put("zip", "NW1 6XE");
-			return is(record);
-		}
+        @Override
+        public Matcher<TypeSerializerSchemaCompatibility<GenericRecord>> schemaCompatibilityMatcher(
+                FlinkVersion version) {
+            return TypeSerializerMatchers.isCompatibleAsIs();
+        }
+    }
 
-		@Override
-		public Matcher<TypeSerializerSchemaCompatibility<GenericRecord>> schemaCompatibilityMatcher(MigrationVersion version) {
-			return TypeSerializerMatchers.isCompatibleAsIs();
-		}
-	}
+    // ----------------------------------------------------------------------------------------------
+    //  Specification for "specific-avro-serializer"
+    // ----------------------------------------------------------------------------------------------
 
-	// ----------------------------------------------------------------------------------------------
-	//  Specification for "specific-avro-serializer"
-	// ----------------------------------------------------------------------------------------------
+    /**
+     * This class is only public to work with {@link
+     * org.apache.flink.api.common.typeutils.ClassRelocator}.
+     */
+    public static final class SpecificAvroSerializerSetup
+            implements TypeSerializerUpgradeTestBase.PreUpgradeSetup<Address> {
 
-	/**
-	 * This class is only public to work with {@link org.apache.flink.api.common.typeutils.ClassRelocator}.
-	 */
-	public static final class SpecificAvroSerializerSetup implements TypeSerializerUpgradeTestBase.PreUpgradeSetup<Address> {
+        @Override
+        public TypeSerializer<Address> createPriorSerializer() {
+            @SuppressWarnings({"unchecked", "rawtypes"})
+            AvroSerializer<Address> avroSerializer = new AvroSerializer(Address.class);
+            return avroSerializer;
+        }
 
-		@Override
-		public TypeSerializer<Address> createPriorSerializer() {
-			@SuppressWarnings({"unchecked", "rawtypes"})
-			AvroSerializer<Address> avroSerializer = new AvroSerializer(Address.class);
-			return avroSerializer;
-		}
+        @Override
+        public Address createTestData() {
+            Address addr = new Address();
+            addr.setNum(239);
+            addr.setStreet("Baker Street");
+            addr.setCity("London");
+            addr.setState("London");
+            addr.setZip("NW1 6XE");
+            return addr;
+        }
+    }
 
-		@Override
-		public Address createTestData() {
-			Address addr = new Address();
-			addr.setNum(239);
-			addr.setStreet("Baker Street");
-			addr.setCity("London");
-			addr.setState("London");
-			addr.setZip("NW1 6XE");
-			return addr;
-		}
-	}
+    /**
+     * This class is only public to work with {@link
+     * org.apache.flink.api.common.typeutils.ClassRelocator}.
+     */
+    public static final class SpecificAvroSerializerVerifier
+            implements TypeSerializerUpgradeTestBase.UpgradeVerifier<Address> {
 
-	/**
-	 * This class is only public to work with {@link org.apache.flink.api.common.typeutils.ClassRelocator}.
-	 */
-	public static final class SpecificAvroSerializerVerifier implements TypeSerializerUpgradeTestBase.UpgradeVerifier<Address> {
+        @Override
+        public TypeSerializer<Address> createUpgradedSerializer() {
+            @SuppressWarnings({"unchecked", "rawtypes"})
+            AvroSerializer<Address> avroSerializer = new AvroSerializer(Address.class);
+            return avroSerializer;
+        }
 
-		@Override
-		public TypeSerializer<Address> createUpgradedSerializer() {
-			@SuppressWarnings({"unchecked", "rawtypes"})
-			AvroSerializer<Address> avroSerializer = new AvroSerializer(Address.class);
-			return avroSerializer;
-		}
+        @Override
+        public Matcher<Address> testDataMatcher() {
+            Address addr = new Address();
+            addr.setNum(239);
+            addr.setStreet("Baker Street");
+            addr.setCity("London");
+            addr.setState("London");
+            addr.setZip("NW1 6XE");
+            return is(addr);
+        }
 
-		@Override
-		public Matcher<Address> testDataMatcher() {
-			Address addr = new Address();
-			addr.setNum(239);
-			addr.setStreet("Baker Street");
-			addr.setCity("London");
-			addr.setState("London");
-			addr.setZip("NW1 6XE");
-			return is(addr);
-		}
-
-		@Override
-		public Matcher<TypeSerializerSchemaCompatibility<Address>> schemaCompatibilityMatcher(MigrationVersion version) {
-			return TypeSerializerMatchers.isCompatibleAsIs();
-		}
-	}
+        @Override
+        public Matcher<TypeSerializerSchemaCompatibility<Address>> schemaCompatibilityMatcher(
+                FlinkVersion version) {
+            return TypeSerializerMatchers.isCompatibleAsIs();
+        }
+    }
 }

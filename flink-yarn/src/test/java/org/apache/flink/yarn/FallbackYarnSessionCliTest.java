@@ -27,43 +27,46 @@ import org.apache.commons.cli.DefaultParser;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertFalse;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/**
- * Tests for the {@link FallbackYarnSessionCliTest}.
- */
-public class FallbackYarnSessionCliTest {
+/** Tests for the {@link FallbackYarnSessionCliTest}. */
+class FallbackYarnSessionCliTest {
 
-	@Test(expected = IllegalStateException.class)
-	public void testExceptionWhenActiveWithYarnApplicationId() throws ParseException {
-		checkIfYarnFallbackCLIisActiveWithCLIArgs(
-				"run",
-				"-yid", ApplicationId.newInstance(0L, 0).toString());
-	}
+    @Test
+    void testExceptionWhenActiveWithYarnApplicationId() {
+        assertThatThrownBy(
+                        () ->
+                                checkIfYarnFallbackCLIisActiveWithCLIArgs(
+                                        "run", "-yid", ApplicationId.newInstance(0L, 0).toString()))
+                .isInstanceOf(IllegalStateException.class);
+    }
 
-	@Test(expected = IllegalStateException.class)
-	public void testExceptionWhenActiveWithExplicitClusterType() throws ParseException {
-		checkIfYarnFallbackCLIisActiveWithCLIArgs(
-				"run",
-				"-m", FallbackYarnSessionCli.ID);
-	}
+    @Test
+    void testExceptionWhenActiveWithExplicitClusterType() {
+        assertThatThrownBy(
+                        () ->
+                                checkIfYarnFallbackCLIisActiveWithCLIArgs(
+                                        "run", "-m", FallbackYarnSessionCli.ID))
+                .isInstanceOf(IllegalStateException.class);
+    }
 
-	@Test
-	public void testFalseWhenNotActive() throws ParseException {
-		final boolean isActive = checkIfYarnFallbackCLIisActiveWithCLIArgs("run");
-		assertFalse(isActive);
-	}
+    @Test
+    void testFalseWhenNotActive() throws ParseException {
+        final boolean isActive = checkIfYarnFallbackCLIisActiveWithCLIArgs("run");
+        assertThat(isActive).isFalse();
+    }
 
-	private boolean checkIfYarnFallbackCLIisActiveWithCLIArgs(final String... args) throws ParseException {
-		final Options options = new Options();
-		final FallbackYarnSessionCli cliUnderTest =
-				new FallbackYarnSessionCli(new Configuration());
-		cliUnderTest.addGeneralOptions(options);
+    private boolean checkIfYarnFallbackCLIisActiveWithCLIArgs(final String... args)
+            throws ParseException {
+        final Options options = new Options();
+        final FallbackYarnSessionCli cliUnderTest = new FallbackYarnSessionCli(new Configuration());
+        cliUnderTest.addGeneralOptions(options);
 
-		final CommandLineParser parser = new DefaultParser();
-		final CommandLine cmd = parser.parse(options, args);
-		return cliUnderTest.isActive(cmd);
-	}
+        final CommandLineParser parser = new DefaultParser();
+        final CommandLine cmd = parser.parse(options, args);
+        return cliUnderTest.isActive(cmd);
+    }
 }

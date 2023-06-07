@@ -18,29 +18,37 @@
 
 package org.apache.flink.table.operations;
 
-/**
- * Operation to describe a USE [catalogName.]dataBaseName statement.
- */
+import org.apache.flink.table.api.internal.TableResultImpl;
+import org.apache.flink.table.api.internal.TableResultInternal;
+
+/** Operation to describe a USE [catalogName.]dataBaseName statement. */
 public class UseDatabaseOperation implements UseOperation {
 
-	private final String catalogName;
-	private final String databaseName;
+    private final String catalogName;
+    private final String databaseName;
 
-	public UseDatabaseOperation(String catalogName, String databaseName) {
-		this.catalogName = catalogName;
-		this.databaseName = databaseName;
-	}
+    public UseDatabaseOperation(String catalogName, String databaseName) {
+        this.catalogName = catalogName;
+        this.databaseName = databaseName;
+    }
 
-	public String getCatalogName() {
-		return catalogName;
-	}
+    public String getCatalogName() {
+        return catalogName;
+    }
 
-	public String getDatabaseName() {
-		return databaseName;
-	}
+    public String getDatabaseName() {
+        return databaseName;
+    }
 
-	@Override
-	public String asSummaryString() {
-		return String.format("USE %s.%s", catalogName, databaseName);
-	}
+    @Override
+    public String asSummaryString() {
+        return String.format("USE %s.%s", catalogName, databaseName);
+    }
+
+    @Override
+    public TableResultInternal execute(Context ctx) {
+        ctx.getCatalogManager().setCurrentCatalog(catalogName);
+        ctx.getCatalogManager().setCurrentDatabase(databaseName);
+        return TableResultImpl.TABLE_RESULT_OK;
+    }
 }

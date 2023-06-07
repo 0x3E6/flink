@@ -25,7 +25,6 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ConfigurationUtils;
 import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.configuration.UnmodifiableConfiguration;
-import org.apache.flink.runtime.akka.AkkaUtils;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.registration.RetryingRegistrationConfiguration;
 import org.apache.flink.runtime.taskmanager.TaskManagerRuntimeInfo;
@@ -39,206 +38,224 @@ import javax.annotation.Nullable;
 import java.io.File;
 import java.time.Duration;
 
-/**
- * Configuration object for {@link TaskExecutor}.
- */
+/** Configuration object for {@link TaskExecutor}. */
 public class TaskManagerConfiguration implements TaskManagerRuntimeInfo {
 
-	private static final Logger LOG = LoggerFactory.getLogger(TaskManagerConfiguration.class);
+    private static final Logger LOG = LoggerFactory.getLogger(TaskManagerConfiguration.class);
 
-	private final int numberSlots;
+    private final int numberSlots;
 
-	private final ResourceProfile defaultSlotResourceProfile;
+    private final ResourceProfile defaultSlotResourceProfile;
 
-	private final ResourceProfile totalResourceProfile;
+    private final ResourceProfile totalResourceProfile;
 
-	private final String[] tmpDirectories;
+    private final String[] tmpDirectories;
 
-	private final Time timeout;
+    private final Time rpcTimeout;
 
-	// null indicates an infinite duration
-	@Nullable
-	private final Time maxRegistrationDuration;
+    private final Time slotTimeout;
 
-	private final UnmodifiableConfiguration configuration;
+    // null indicates an infinite duration
+    @Nullable private final Duration maxRegistrationDuration;
 
-	private final boolean exitJvmOnOutOfMemory;
+    private final UnmodifiableConfiguration configuration;
 
-	@Nullable
-	private final String taskManagerLogPath;
+    private final boolean exitJvmOnOutOfMemory;
 
-	@Nullable
-	private final String taskManagerStdoutPath;
+    @Nullable private final String taskManagerLogPath;
 
-	@Nullable
-	private final String taskManagerLogDir;
+    @Nullable private final String taskManagerStdoutPath;
 
-	private final String taskManagerExternalAddress;
+    @Nullable private final String taskManagerLogDir;
 
-	private final RetryingRegistrationConfiguration retryingRegistrationConfiguration;
+    private final String taskManagerExternalAddress;
 
-	public TaskManagerConfiguration(
-			int numberSlots,
-			ResourceProfile defaultSlotResourceProfile,
-			ResourceProfile totalResourceProfile,
-			String[] tmpDirectories,
-			Time timeout,
-			@Nullable Time maxRegistrationDuration,
-			Configuration configuration,
-			boolean exitJvmOnOutOfMemory,
-			@Nullable String taskManagerLogPath,
-			@Nullable String taskManagerStdoutPath,
-			@Nullable String taskManagerLogDir,
-			String taskManagerExternalAddress,
-			RetryingRegistrationConfiguration retryingRegistrationConfiguration) {
+    private final File tmpWorkingDirectory;
 
-		this.numberSlots = numberSlots;
-		this.defaultSlotResourceProfile = defaultSlotResourceProfile;
-		this.totalResourceProfile = totalResourceProfile;
-		this.tmpDirectories = Preconditions.checkNotNull(tmpDirectories);
-		this.timeout = Preconditions.checkNotNull(timeout);
-		this.maxRegistrationDuration = maxRegistrationDuration;
-		this.configuration = new UnmodifiableConfiguration(Preconditions.checkNotNull(configuration));
-		this.exitJvmOnOutOfMemory = exitJvmOnOutOfMemory;
-		this.taskManagerLogPath = taskManagerLogPath;
-		this.taskManagerStdoutPath = taskManagerStdoutPath;
-		this.taskManagerLogDir = taskManagerLogDir;
-		this.taskManagerExternalAddress = taskManagerExternalAddress;
-		this.retryingRegistrationConfiguration = retryingRegistrationConfiguration;
-	}
+    private final RetryingRegistrationConfiguration retryingRegistrationConfiguration;
 
-	public int getNumberSlots() {
-		return numberSlots;
-	}
+    public TaskManagerConfiguration(
+            int numberSlots,
+            ResourceProfile defaultSlotResourceProfile,
+            ResourceProfile totalResourceProfile,
+            String[] tmpDirectories,
+            Time rpcTimeout,
+            Time slotTimeout,
+            @Nullable Duration maxRegistrationDuration,
+            Configuration configuration,
+            boolean exitJvmOnOutOfMemory,
+            @Nullable String taskManagerLogPath,
+            @Nullable String taskManagerStdoutPath,
+            @Nullable String taskManagerLogDir,
+            String taskManagerExternalAddress,
+            File tmpWorkingDirectory,
+            RetryingRegistrationConfiguration retryingRegistrationConfiguration) {
 
-	public ResourceProfile getDefaultSlotResourceProfile() {
-		return defaultSlotResourceProfile;
-	}
+        this.numberSlots = numberSlots;
+        this.defaultSlotResourceProfile = defaultSlotResourceProfile;
+        this.totalResourceProfile = totalResourceProfile;
+        this.tmpDirectories = Preconditions.checkNotNull(tmpDirectories);
+        this.rpcTimeout = Preconditions.checkNotNull(rpcTimeout);
+        this.slotTimeout = Preconditions.checkNotNull(slotTimeout);
+        this.maxRegistrationDuration = maxRegistrationDuration;
+        this.configuration =
+                new UnmodifiableConfiguration(Preconditions.checkNotNull(configuration));
+        this.exitJvmOnOutOfMemory = exitJvmOnOutOfMemory;
+        this.taskManagerLogPath = taskManagerLogPath;
+        this.taskManagerStdoutPath = taskManagerStdoutPath;
+        this.taskManagerLogDir = taskManagerLogDir;
+        this.taskManagerExternalAddress = taskManagerExternalAddress;
+        this.tmpWorkingDirectory = tmpWorkingDirectory;
+        this.retryingRegistrationConfiguration = retryingRegistrationConfiguration;
+    }
 
-	public ResourceProfile getTotalResourceProfile() {
-		return totalResourceProfile;
-	}
+    public int getNumberSlots() {
+        return numberSlots;
+    }
 
-	public Time getTimeout() {
-		return timeout;
-	}
+    public ResourceProfile getDefaultSlotResourceProfile() {
+        return defaultSlotResourceProfile;
+    }
 
-	@Nullable
-	public Time getMaxRegistrationDuration() {
-		return maxRegistrationDuration;
-	}
+    public ResourceProfile getTotalResourceProfile() {
+        return totalResourceProfile;
+    }
 
-	@Override
-	public Configuration getConfiguration() {
-		return configuration;
-	}
+    public Time getRpcTimeout() {
+        return rpcTimeout;
+    }
 
-	@Override
-	public String[] getTmpDirectories() {
-		return tmpDirectories;
-	}
+    public Time getSlotTimeout() {
+        return slotTimeout;
+    }
 
-	@Override
-	public boolean shouldExitJvmOnOutOfMemoryError() {
-		return exitJvmOnOutOfMemory;
-	}
+    @Nullable
+    public Duration getMaxRegistrationDuration() {
+        return maxRegistrationDuration;
+    }
 
-	@Nullable
-	public String getTaskManagerLogPath() {
-		return taskManagerLogPath;
-	}
+    @Override
+    public Configuration getConfiguration() {
+        return configuration;
+    }
 
-	@Nullable
-	public String getTaskManagerStdoutPath() {
-		return taskManagerStdoutPath;
-	}
+    @Override
+    public String[] getTmpDirectories() {
+        return tmpDirectories;
+    }
 
-	@Nullable
-	public String getTaskManagerLogDir() {
-		return taskManagerLogDir;
-	}
+    @Override
+    public boolean shouldExitJvmOnOutOfMemoryError() {
+        return exitJvmOnOutOfMemory;
+    }
 
-	@Override
-	public String getTaskManagerExternalAddress() {
-		return taskManagerExternalAddress;
-	}
+    @Nullable
+    public String getTaskManagerLogPath() {
+        return taskManagerLogPath;
+    }
 
-	public RetryingRegistrationConfiguration getRetryingRegistrationConfiguration() {
-		return retryingRegistrationConfiguration;
-	}
+    @Nullable
+    public String getTaskManagerStdoutPath() {
+        return taskManagerStdoutPath;
+    }
 
-	// --------------------------------------------------------------------------------------------
-	//  Static factory methods
-	// --------------------------------------------------------------------------------------------
+    @Nullable
+    public String getTaskManagerLogDir() {
+        return taskManagerLogDir;
+    }
 
-	public static TaskManagerConfiguration fromConfiguration(
-			Configuration configuration,
-			TaskExecutorResourceSpec taskExecutorResourceSpec,
-			String externalAddress) {
-		int numberSlots = configuration.getInteger(TaskManagerOptions.NUM_TASK_SLOTS, 1);
+    @Override
+    public String getTaskManagerExternalAddress() {
+        return taskManagerExternalAddress;
+    }
 
-		if (numberSlots == -1) {
-			numberSlots = 1;
-		}
+    @Override
+    public File getTmpWorkingDirectory() {
+        return tmpWorkingDirectory;
+    }
 
-		final String[] tmpDirPaths = ConfigurationUtils.parseTempDirectories(configuration);
+    public RetryingRegistrationConfiguration getRetryingRegistrationConfiguration() {
+        return retryingRegistrationConfiguration;
+    }
 
-		final Time timeout;
-		try {
-			timeout = AkkaUtils.getTimeoutAsTime(configuration);
-		} catch (Exception e) {
-			throw new IllegalArgumentException(
-				"Invalid format for '" + AkkaOptions.ASK_TIMEOUT.key() +
-					"'.Use formats like '50 s' or '1 min' to specify the timeout.");
-		}
+    // --------------------------------------------------------------------------------------------
+    //  Static factory methods
+    // --------------------------------------------------------------------------------------------
 
-		LOG.debug("Messages have a max timeout of " + timeout);
+    public static TaskManagerConfiguration fromConfiguration(
+            Configuration configuration,
+            TaskExecutorResourceSpec taskExecutorResourceSpec,
+            String externalAddress,
+            File tmpWorkingDirectory) {
+        int numberSlots = configuration.getInteger(TaskManagerOptions.NUM_TASK_SLOTS, 1);
 
-		Time finiteRegistrationDuration;
-		try {
-			Duration maxRegistrationDuration = configuration.get(TaskManagerOptions.REGISTRATION_TIMEOUT);
-			finiteRegistrationDuration = Time.milliseconds(maxRegistrationDuration.toMillis());
-		} catch (IllegalArgumentException e) {
-			LOG.warn("Invalid format for parameter {}. Set the timeout to be infinite.",
-				TaskManagerOptions.REGISTRATION_TIMEOUT.key());
-			finiteRegistrationDuration = null;
-		}
+        if (numberSlots == -1) {
+            numberSlots = 1;
+        }
 
-		final boolean exitOnOom = configuration.getBoolean(TaskManagerOptions.KILL_ON_OUT_OF_MEMORY);
+        final String[] tmpDirPaths = ConfigurationUtils.parseTempDirectories(configuration);
 
-		final String taskManagerLogPath = configuration.getString(ConfigConstants.TASK_MANAGER_LOG_PATH_KEY, System.getProperty("log.file"));
-		final String taskManagerStdoutPath;
-		final String taskManagerLogDir;
+        final Time rpcTimeout =
+                Time.fromDuration(configuration.get(AkkaOptions.ASK_TIMEOUT_DURATION));
 
-		if (taskManagerLogPath != null) {
-			final int extension = taskManagerLogPath.lastIndexOf('.');
-			taskManagerLogDir = new File(taskManagerLogPath).getParent();
+        LOG.debug("Messages have a max timeout of " + rpcTimeout);
 
-			if (extension > 0) {
-				taskManagerStdoutPath = taskManagerLogPath.substring(0, extension) + ".out";
-			} else {
-				taskManagerStdoutPath = null;
-			}
-		} else {
-			taskManagerStdoutPath = null;
-			taskManagerLogDir = null;
-		}
+        final Time slotTimeout =
+                Time.milliseconds(configuration.get(TaskManagerOptions.SLOT_TIMEOUT).toMillis());
 
-		final RetryingRegistrationConfiguration retryingRegistrationConfiguration = RetryingRegistrationConfiguration.fromConfiguration(configuration);
+        Duration finiteRegistrationDuration;
+        try {
+            finiteRegistrationDuration = configuration.get(TaskManagerOptions.REGISTRATION_TIMEOUT);
+        } catch (IllegalArgumentException e) {
+            LOG.warn(
+                    "Invalid format for parameter {}. Set the timeout to be infinite.",
+                    TaskManagerOptions.REGISTRATION_TIMEOUT.key());
+            finiteRegistrationDuration = null;
+        }
 
-		return new TaskManagerConfiguration(
-			numberSlots,
-			TaskExecutorResourceUtils.generateDefaultSlotResourceProfile(taskExecutorResourceSpec, numberSlots),
-			TaskExecutorResourceUtils.generateTotalAvailableResourceProfile(taskExecutorResourceSpec),
-			tmpDirPaths,
-			timeout,
-			finiteRegistrationDuration,
-			configuration,
-			exitOnOom,
-			taskManagerLogPath,
-			taskManagerStdoutPath,
-			taskManagerLogDir,
-			externalAddress,
-			retryingRegistrationConfiguration);
-	}
+        final boolean exitOnOom =
+                configuration.getBoolean(TaskManagerOptions.KILL_ON_OUT_OF_MEMORY);
+
+        final String taskManagerLogPath =
+                configuration.getString(
+                        ConfigConstants.TASK_MANAGER_LOG_PATH_KEY, System.getProperty("log.file"));
+        final String taskManagerStdoutPath;
+        final String taskManagerLogDir;
+
+        if (taskManagerLogPath != null) {
+            final int extension = taskManagerLogPath.lastIndexOf('.');
+            taskManagerLogDir = new File(taskManagerLogPath).getParent();
+
+            if (extension > 0) {
+                taskManagerStdoutPath = taskManagerLogPath.substring(0, extension) + ".out";
+            } else {
+                taskManagerStdoutPath = null;
+            }
+        } else {
+            taskManagerStdoutPath = null;
+            taskManagerLogDir = null;
+        }
+
+        final RetryingRegistrationConfiguration retryingRegistrationConfiguration =
+                RetryingRegistrationConfiguration.fromConfiguration(configuration);
+
+        return new TaskManagerConfiguration(
+                numberSlots,
+                TaskExecutorResourceUtils.generateDefaultSlotResourceProfile(
+                        taskExecutorResourceSpec, numberSlots),
+                TaskExecutorResourceUtils.generateTotalAvailableResourceProfile(
+                        taskExecutorResourceSpec),
+                tmpDirPaths,
+                rpcTimeout,
+                slotTimeout,
+                finiteRegistrationDuration,
+                configuration,
+                exitOnOom,
+                taskManagerLogPath,
+                taskManagerStdoutPath,
+                taskManagerLogDir,
+                externalAddress,
+                tmpWorkingDirectory,
+                retryingRegistrationConfiguration);
+    }
 }

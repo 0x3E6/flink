@@ -34,264 +34,329 @@ import java.nio.ByteOrder;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 
-/**
- * The part-file writer that writes to the specified hadoop path.
- */
-public class HadoopPathBasedPartFileWriter<IN, BucketID> extends AbstractPartFileWriter<IN, BucketID> {
+/** The part-file writer that writes to the specified hadoop path. */
+public class HadoopPathBasedPartFileWriter<IN, BucketID>
+        extends AbstractPartFileWriter<IN, BucketID> {
 
-	private final HadoopPathBasedBulkWriter<IN> writer;
+    private final HadoopPathBasedBulkWriter<IN> writer;
 
-	private final HadoopFileCommitter fileCommitter;
+    private final HadoopFileCommitter fileCommitter;
 
-	public HadoopPathBasedPartFileWriter(
-		final BucketID bucketID,
-		HadoopPathBasedBulkWriter<IN> writer,
-		HadoopFileCommitter fileCommitter,
-		long createTime) {
+    public HadoopPathBasedPartFileWriter(
+            final BucketID bucketID,
+            HadoopPathBasedBulkWriter<IN> writer,
+            HadoopFileCommitter fileCommitter,
+            long createTime) {
 
-		super(bucketID, createTime);
+        super(bucketID, createTime);
 
-		this.writer = writer;
-		this.fileCommitter = fileCommitter;
-	}
+        this.writer = writer;
+        this.fileCommitter = fileCommitter;
+    }
 
-	@Override
-	public void write(IN element, long currentTime) throws IOException {
-		writer.addElement(element);
-		markWrite(currentTime);
-	}
+    @Override
+    public void write(IN element, long currentTime) throws IOException {
+        writer.addElement(element);
+        markWrite(currentTime);
+    }
 
-	@Override
-	public InProgressFileRecoverable persist() {
-		throw new UnsupportedOperationException("The path based writers do not support persisting");
-	}
+    @Override
+    public InProgressFileRecoverable persist() {
+        throw new UnsupportedOperationException("The path based writers do not support persisting");
+    }
 
-	@Override
-	public PendingFileRecoverable closeForCommit() throws IOException {
-		writer.flush();
-		writer.finish();
-		fileCommitter.preCommit();
-		return new HadoopPathBasedPendingFile(fileCommitter).getRecoverable();
-	}
+    @Override
+    public PendingFileRecoverable closeForCommit() throws IOException {
+        writer.flush();
+        writer.finish();
+        fileCommitter.preCommit();
+        return new HadoopPathBasedPendingFile(fileCommitter, getSize()).getRecoverable();
+    }
 
-	@Override
-	public void dispose() {
-		writer.dispose();
-	}
+    @Override
+    public void dispose() {
+        writer.dispose();
+    }
 
-	@Override
-	public long getSize() throws IOException {
-		return writer.getSize();
-	}
+    @Override
+    public long getSize() throws IOException {
+        return writer.getSize();
+    }
 
-	static class HadoopPathBasedPendingFile implements BucketWriter.PendingFile {
-		private final HadoopFileCommitter fileCommitter;
+    static class HadoopPathBasedPendingFile implements BucketWriter.PendingFile {
+        private final HadoopFileCommitter fileCommitter;
 
-		public HadoopPathBasedPendingFile(HadoopFileCommitter fileCommitter) {
-			this.fileCommitter = fileCommitter;
-		}
+        private final long fileSize;
 
-		@Override
-		public void commit() throws IOException {
-			fileCommitter.commit();
-		}
+        public HadoopPathBasedPendingFile(HadoopFileCommitter fileCommitter, long fileSize) {
+            this.fileCommitter = fileCommitter;
+            this.fileSize = fileSize;
+        }
 
-		@Override
-		public void commitAfterRecovery() throws IOException {
-			fileCommitter.commitAfterRecovery();
-		}
+        @Override
+        public void commit() throws IOException {
+            fileCommitter.commit();
+        }
 
-		public PendingFileRecoverable getRecoverable() {
-			return new HadoopPathBasedPendingFileRecoverable(
-				fileCommitter.getTargetFilePath(),
-				fileCommitter.getTempFilePath());
-		}
-	}
+        @Override
+        public void commitAfterRecovery() throws IOException {
+            fileCommitter.commitAfterRecovery();
+        }
 
-	@VisibleForTesting
-	static class HadoopPathBasedPendingFileRecoverable implements PendingFileRecoverable {
-		private final Path targetFilePath;
+        public PendingFileRecoverable getRecoverable() {
+            return new HadoopPathBasedPendingFileRecoverable(
+                    fileCommitter.getTargetFilePath(), fileCommitter.getTempFilePath(), fileSize);
+        }
+    }
 
-		private final Path tempFilePath;
+    @VisibleForTesting
+    static class HadoopPathBasedPendingFileRecoverable implements PendingFileRecoverable {
+        private final Path targetFilePath;
 
-		public HadoopPathBasedPendingFileRecoverable(Path targetFilePath, Path tempFilePath) {
-			this.targetFilePath = targetFilePath;
-			this.tempFilePath = tempFilePath;
-		}
+        private final Path tempFilePath;
 
-		public Path getTargetFilePath() {
-			return targetFilePath;
-		}
+        private final long fileSize;
 
-		public Path getTempFilePath() {
-			return tempFilePath;
-		}
-	}
+        @Deprecated
+        // Remained for compatibility
+        public HadoopPathBasedPendingFileRecoverable(Path targetFilePath, Path tempFilePath) {
+            this.targetFilePath = targetFilePath;
+            this.tempFilePath = tempFilePath;
+            this.fileSize = -1L;
+        }
 
-	@VisibleForTesting
-	static class HadoopPathBasedPendingFileRecoverableSerializer
-		implements SimpleVersionedSerializer<PendingFileRecoverable> {
+        public HadoopPathBasedPendingFileRecoverable(
+                Path targetFilePath, Path tempFilePath, long fileSize) {
+            this.targetFilePath = targetFilePath;
+            this.tempFilePath = tempFilePath;
+            this.fileSize = fileSize;
+        }
 
-		static final HadoopPathBasedPendingFileRecoverableSerializer INSTANCE =
-			new HadoopPathBasedPendingFileRecoverableSerializer();
+        public Path getTargetFilePath() {
+            return targetFilePath;
+        }
 
-		private static final Charset CHARSET = StandardCharsets.UTF_8;
+        public Path getTempFilePath() {
+            return tempFilePath;
+        }
 
-		private static final int MAGIC_NUMBER = 0x2c853c90;
+        @Override
+        public org.apache.flink.core.fs.Path getPath() {
+            return new org.apache.flink.core.fs.Path(targetFilePath.toString());
+        }
 
-		@Override
-		public int getVersion() {
-			return 1;
-		}
+        @Override
+        public long getSize() {
+            return fileSize;
+        }
+    }
 
-		@Override
-		public byte[] serialize(PendingFileRecoverable pendingFileRecoverable) {
-			if (!(pendingFileRecoverable instanceof HadoopPathBasedPartFileWriter.HadoopPathBasedPendingFileRecoverable)) {
-				throw new UnsupportedOperationException("Only HadoopPathBasedPendingFileRecoverable is supported.");
-			}
+    @VisibleForTesting
+    static class HadoopPathBasedPendingFileRecoverableSerializer
+            implements SimpleVersionedSerializer<PendingFileRecoverable> {
 
-			HadoopPathBasedPendingFileRecoverable hadoopRecoverable =
-				(HadoopPathBasedPendingFileRecoverable) pendingFileRecoverable;
-			Path path = hadoopRecoverable.getTargetFilePath();
-			Path inProgressPath = hadoopRecoverable.getTempFilePath();
+        static final HadoopPathBasedPendingFileRecoverableSerializer INSTANCE =
+                new HadoopPathBasedPendingFileRecoverableSerializer();
 
-			byte[] pathBytes = path.toUri().toString().getBytes(CHARSET);
-			byte[] inProgressBytes = inProgressPath.toUri().toString().getBytes(CHARSET);
+        private static final Charset CHARSET = StandardCharsets.UTF_8;
 
-			byte[] targetBytes = new byte[12 + pathBytes.length + inProgressBytes.length];
-			ByteBuffer bb = ByteBuffer.wrap(targetBytes).order(ByteOrder.LITTLE_ENDIAN);
-			bb.putInt(MAGIC_NUMBER);
-			bb.putInt(pathBytes.length);
-			bb.put(pathBytes);
-			bb.putInt(inProgressBytes.length);
-			bb.put(inProgressBytes);
+        private static final int MAGIC_NUMBER = 0x2c853c90;
 
-			return targetBytes;
-		}
+        @Override
+        public int getVersion() {
+            return 2;
+        }
 
-		@Override
-		public HadoopPathBasedPendingFileRecoverable deserialize(int version, byte[] serialized) throws IOException {
-			switch (version) {
-				case 1:
-					return deserializeV1(serialized);
-				default:
-					throw new IOException("Unrecognized version or corrupt state: " + version);
-			}
-		}
+        @Override
+        public byte[] serialize(PendingFileRecoverable pendingFileRecoverable) {
+            if (!(pendingFileRecoverable
+                    instanceof
+                    HadoopPathBasedPartFileWriter.HadoopPathBasedPendingFileRecoverable)) {
+                throw new UnsupportedOperationException(
+                        "Only HadoopPathBasedPendingFileRecoverable is supported.");
+            }
 
-		private HadoopPathBasedPendingFileRecoverable deserializeV1(byte[] serialized) throws IOException {
-			final ByteBuffer bb = ByteBuffer.wrap(serialized).order(ByteOrder.LITTLE_ENDIAN);
+            HadoopPathBasedPendingFileRecoverable hadoopRecoverable =
+                    (HadoopPathBasedPendingFileRecoverable) pendingFileRecoverable;
+            Path path = hadoopRecoverable.getTargetFilePath();
+            Path inProgressPath = hadoopRecoverable.getTempFilePath();
 
-			if (bb.getInt() != MAGIC_NUMBER) {
-				throw new IOException("Corrupt data: Unexpected magic number.");
-			}
+            byte[] pathBytes = path.toUri().toString().getBytes(CHARSET);
+            byte[] inProgressBytes = inProgressPath.toUri().toString().getBytes(CHARSET);
 
-			byte[] targetFilePathBytes = new byte[bb.getInt()];
-			bb.get(targetFilePathBytes);
-			String targetFilePath = new String(targetFilePathBytes, CHARSET);
+            byte[] targetBytes =
+                    new byte[12 + pathBytes.length + inProgressBytes.length + Long.BYTES];
+            ByteBuffer bb = ByteBuffer.wrap(targetBytes).order(ByteOrder.LITTLE_ENDIAN);
+            bb.putInt(MAGIC_NUMBER);
+            bb.putInt(pathBytes.length);
+            bb.put(pathBytes);
+            bb.putInt(inProgressBytes.length);
+            bb.put(inProgressBytes);
+            bb.putLong(hadoopRecoverable.getSize());
 
-			byte[] tempFilePathBytes = new byte[bb.getInt()];
-			bb.get(tempFilePathBytes);
-			String tempFilePath = new String(tempFilePathBytes, CHARSET);
+            return targetBytes;
+        }
 
-			return new HadoopPathBasedPendingFileRecoverable(
-				new Path(targetFilePath),
-				new Path(tempFilePath));
-		}
-	}
+        @Override
+        public HadoopPathBasedPendingFileRecoverable deserialize(int version, byte[] serialized)
+                throws IOException {
+            switch (version) {
+                case 1:
+                    return deserializeV1(serialized);
+                case 2:
+                    return deserializeV2(serialized);
+                default:
+                    throw new IOException("Unrecognized version or corrupt state: " + version);
+            }
+        }
 
-	private static class UnsupportedInProgressFileRecoverableSerializable
-		implements SimpleVersionedSerializer<InProgressFileRecoverable> {
+        private HadoopPathBasedPendingFileRecoverable deserializeV1(byte[] serialized)
+                throws IOException {
+            final ByteBuffer bb = ByteBuffer.wrap(serialized).order(ByteOrder.LITTLE_ENDIAN);
 
-		static final UnsupportedInProgressFileRecoverableSerializable INSTANCE =
-			new UnsupportedInProgressFileRecoverableSerializable();
+            if (bb.getInt() != MAGIC_NUMBER) {
+                throw new IOException("Corrupt data: Unexpected magic number.");
+            }
 
-		@Override
-		public int getVersion() {
-			throw new UnsupportedOperationException("Persists the path-based part file write is not supported");
-		}
+            byte[] targetFilePathBytes = new byte[bb.getInt()];
+            bb.get(targetFilePathBytes);
+            String targetFilePath = new String(targetFilePathBytes, CHARSET);
 
-		@Override
-		public byte[] serialize(InProgressFileRecoverable obj) {
-			throw new UnsupportedOperationException("Persists the path-based part file write is not supported");
-		}
+            byte[] tempFilePathBytes = new byte[bb.getInt()];
+            bb.get(tempFilePathBytes);
+            String tempFilePath = new String(tempFilePathBytes, CHARSET);
 
-		@Override
-		public InProgressFileRecoverable deserialize(int version, byte[] serialized) {
-			throw new UnsupportedOperationException("Persists the path-based part file write is not supported");
-		}
-	}
+            return new HadoopPathBasedPendingFileRecoverable(
+                    new Path(targetFilePath), new Path(tempFilePath));
+        }
 
-	/**
-	 * Factory to create {@link HadoopPathBasedPartFileWriter}. This writer does not support snapshotting
-	 * the in-progress files. For pending files, it stores the target path and the staging file path into
-	 * the state.
-	 */
-	public static class HadoopPathBasedBucketWriter<IN, BucketID> implements BucketWriter<IN, BucketID> {
-		private final Configuration configuration;
+        private HadoopPathBasedPendingFileRecoverable deserializeV2(byte[] serialized)
+                throws IOException {
+            final ByteBuffer bb = ByteBuffer.wrap(serialized).order(ByteOrder.LITTLE_ENDIAN);
 
-		private final HadoopPathBasedBulkWriter.Factory<IN> bulkWriterFactory;
+            if (bb.getInt() != MAGIC_NUMBER) {
+                throw new IOException("Corrupt data: Unexpected magic number.");
+            }
 
-		private final HadoopFileCommitterFactory fileCommitterFactory;
+            byte[] targetFilePathBytes = new byte[bb.getInt()];
+            bb.get(targetFilePathBytes);
+            String targetFilePath = new String(targetFilePathBytes, CHARSET);
 
-		public HadoopPathBasedBucketWriter(
-			Configuration configuration,
-			HadoopPathBasedBulkWriter.Factory<IN> bulkWriterFactory,
-			HadoopFileCommitterFactory fileCommitterFactory) {
+            byte[] tempFilePathBytes = new byte[bb.getInt()];
+            bb.get(tempFilePathBytes);
+            String tempFilePath = new String(tempFilePathBytes, CHARSET);
 
-			this.configuration = configuration;
-			this.bulkWriterFactory = bulkWriterFactory;
-			this.fileCommitterFactory = fileCommitterFactory;
-		}
+            long fileSize = bb.getLong();
 
-		@Override
-		public HadoopPathBasedPartFileWriter<IN, BucketID> openNewInProgressFile(
-			BucketID bucketID,
-			org.apache.flink.core.fs.Path flinkPath,
-			long creationTime) throws IOException {
+            return new HadoopPathBasedPendingFileRecoverable(
+                    new Path(targetFilePath), new Path(tempFilePath), fileSize);
+        }
+    }
 
-			Path path = new Path(flinkPath.toUri());
-			HadoopFileCommitter fileCommitter = fileCommitterFactory.create(configuration, path);
+    private static class UnsupportedInProgressFileRecoverableSerializable
+            implements SimpleVersionedSerializer<InProgressFileRecoverable> {
 
-			Path inProgressFilePath = fileCommitter.getTempFilePath();
-			HadoopPathBasedBulkWriter<IN> writer = bulkWriterFactory.create(path, inProgressFilePath);
-			return new HadoopPathBasedPartFileWriter<>(bucketID, writer, fileCommitter, creationTime);
-		}
+        static final UnsupportedInProgressFileRecoverableSerializable INSTANCE =
+                new UnsupportedInProgressFileRecoverableSerializable();
 
-		@Override
-		public PendingFile recoverPendingFile(PendingFileRecoverable pendingFileRecoverable) throws IOException {
-			if (!(pendingFileRecoverable instanceof HadoopPathBasedPartFileWriter.HadoopPathBasedPendingFileRecoverable)) {
-				throw new UnsupportedOperationException("Only HadoopPathBasedPendingFileRecoverable is supported.");
-			}
+        @Override
+        public int getVersion() {
+            throw new UnsupportedOperationException(
+                    "Persists the path-based part file write is not supported");
+        }
 
-			HadoopPathBasedPendingFileRecoverable hadoopRecoverable =
-				(HadoopPathBasedPendingFileRecoverable) pendingFileRecoverable;
-			return new HadoopPathBasedPendingFile(fileCommitterFactory.recoverForCommit(
-				configuration,
-				hadoopRecoverable.getTargetFilePath(),
-				hadoopRecoverable.getTempFilePath()));
-		}
+        @Override
+        public byte[] serialize(InProgressFileRecoverable obj) {
+            throw new UnsupportedOperationException(
+                    "Persists the path-based part file write is not supported");
+        }
 
-		@Override
-		public WriterProperties getProperties() {
-			return new WriterProperties(
-				UnsupportedInProgressFileRecoverableSerializable.INSTANCE,
-				HadoopPathBasedPendingFileRecoverableSerializer.INSTANCE,
-				false);
-		}
+        @Override
+        public InProgressFileRecoverable deserialize(int version, byte[] serialized) {
+            throw new UnsupportedOperationException(
+                    "Persists the path-based part file write is not supported");
+        }
+    }
 
-		@Override
-		public InProgressFileWriter<IN, BucketID> resumeInProgressFileFrom(
-			BucketID bucketID,
-			InProgressFileRecoverable inProgressFileSnapshot,
-			long creationTime) {
+    /**
+     * Factory to create {@link HadoopPathBasedPartFileWriter}. This writer does not support
+     * snapshotting the in-progress files. For pending files, it stores the target path and the
+     * staging file path into the state.
+     */
+    public static class HadoopPathBasedBucketWriter<IN, BucketID>
+            implements BucketWriter<IN, BucketID> {
+        private final Configuration configuration;
 
-			throw new UnsupportedOperationException("Resume is not supported");
-		}
+        private final HadoopPathBasedBulkWriter.Factory<IN> bulkWriterFactory;
 
-		@Override
-		public boolean cleanupInProgressFileRecoverable(InProgressFileRecoverable inProgressFileRecoverable) {
-			return false;
-		}
-	}
+        private final HadoopFileCommitterFactory fileCommitterFactory;
+
+        public HadoopPathBasedBucketWriter(
+                Configuration configuration,
+                HadoopPathBasedBulkWriter.Factory<IN> bulkWriterFactory,
+                HadoopFileCommitterFactory fileCommitterFactory) {
+
+            this.configuration = configuration;
+            this.bulkWriterFactory = bulkWriterFactory;
+            this.fileCommitterFactory = fileCommitterFactory;
+        }
+
+        @Override
+        public HadoopPathBasedPartFileWriter<IN, BucketID> openNewInProgressFile(
+                BucketID bucketID, org.apache.flink.core.fs.Path flinkPath, long creationTime)
+                throws IOException {
+
+            Path path = new Path(flinkPath.toUri());
+            HadoopFileCommitter fileCommitter = fileCommitterFactory.create(configuration, path);
+
+            Path inProgressFilePath = fileCommitter.getTempFilePath();
+            HadoopPathBasedBulkWriter<IN> writer =
+                    bulkWriterFactory.create(path, inProgressFilePath);
+            return new HadoopPathBasedPartFileWriter<>(
+                    bucketID, writer, fileCommitter, creationTime);
+        }
+
+        @Override
+        public PendingFile recoverPendingFile(PendingFileRecoverable pendingFileRecoverable)
+                throws IOException {
+            if (!(pendingFileRecoverable
+                    instanceof
+                    HadoopPathBasedPartFileWriter.HadoopPathBasedPendingFileRecoverable)) {
+                throw new UnsupportedOperationException(
+                        "Only HadoopPathBasedPendingFileRecoverable is supported.");
+            }
+
+            HadoopPathBasedPendingFileRecoverable hadoopRecoverable =
+                    (HadoopPathBasedPendingFileRecoverable) pendingFileRecoverable;
+            return new HadoopPathBasedPendingFile(
+                    fileCommitterFactory.recoverForCommit(
+                            configuration,
+                            hadoopRecoverable.getTargetFilePath(),
+                            hadoopRecoverable.getTempFilePath()),
+                    hadoopRecoverable.getSize());
+        }
+
+        @Override
+        public WriterProperties getProperties() {
+            return new WriterProperties(
+                    UnsupportedInProgressFileRecoverableSerializable.INSTANCE,
+                    HadoopPathBasedPendingFileRecoverableSerializer.INSTANCE,
+                    false);
+        }
+
+        @Override
+        public InProgressFileWriter<IN, BucketID> resumeInProgressFileFrom(
+                BucketID bucketID,
+                InProgressFileRecoverable inProgressFileSnapshot,
+                long creationTime) {
+
+            throw new UnsupportedOperationException("Resume is not supported");
+        }
+
+        @Override
+        public boolean cleanupInProgressFileRecoverable(
+                InProgressFileRecoverable inProgressFileRecoverable) {
+            return false;
+        }
+    }
 }

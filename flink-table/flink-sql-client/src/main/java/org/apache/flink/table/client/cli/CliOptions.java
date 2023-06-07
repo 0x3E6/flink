@@ -20,79 +20,144 @@ package org.apache.flink.table.client.cli;
 
 import org.apache.flink.configuration.Configuration;
 
+import javax.annotation.Nullable;
+
 import java.net.URL;
 import java.util.List;
+import java.util.Optional;
+import java.util.Properties;
 
 /**
- * Command line options to configure the SQL client. Arguments that have not been specified
- * by the user are null.
+ * Command line options to configure the SQL client. Arguments that have not been specified by the
+ * user are null.
  */
 public class CliOptions {
 
-	private final boolean isPrintHelp;
-	private final String sessionId;
-	private final URL environment;
-	private final URL defaults;
-	private final List<URL> jars;
-	private final List<URL> libraryDirs;
-	private final String updateStatement;
-	private final String historyFilePath;
-	private final Configuration pythonConfiguration;
+    private final boolean isPrintHelp;
+    private final String sessionId;
+    private final URL initFile;
+    private final URL sqlFile;
+    private final String updateStatement;
+    private final String historyFilePath;
+    private final Properties sessionConfig;
 
-	public CliOptions(
-			boolean isPrintHelp,
-			String sessionId,
-			URL environment,
-			URL defaults,
-			List<URL> jars,
-			List<URL> libraryDirs,
-			String updateStatement,
-			String historyFilePath,
-			Configuration pythonConfiguration) {
-		this.isPrintHelp = isPrintHelp;
-		this.sessionId = sessionId;
-		this.environment = environment;
-		this.defaults = defaults;
-		this.jars = jars;
-		this.libraryDirs = libraryDirs;
-		this.updateStatement = updateStatement;
-		this.historyFilePath = historyFilePath;
-		this.pythonConfiguration = pythonConfiguration;
-	}
+    private CliOptions(
+            boolean isPrintHelp,
+            String sessionId,
+            URL initFile,
+            URL sqlFile,
+            String updateStatement,
+            String historyFilePath,
+            Properties sessionConfig) {
+        this.isPrintHelp = isPrintHelp;
+        this.sessionId = sessionId;
+        this.initFile = initFile;
+        this.sqlFile = sqlFile;
+        this.updateStatement = updateStatement;
+        this.historyFilePath = historyFilePath;
+        this.sessionConfig = sessionConfig;
+    }
 
-	public boolean isPrintHelp() {
-		return isPrintHelp;
-	}
+    public boolean isPrintHelp() {
+        return isPrintHelp;
+    }
 
-	public String getSessionId() {
-		return sessionId;
-	}
+    public String getSessionId() {
+        return sessionId;
+    }
 
-	public URL getEnvironment() {
-		return environment;
-	}
+    public @Nullable URL getInitFile() {
+        return initFile;
+    }
 
-	public URL getDefaults() {
-		return defaults;
-	}
+    public @Nullable URL getSqlFile() {
+        return sqlFile;
+    }
 
-	public List<URL> getJars() {
-		return jars;
-	}
+    public String getHistoryFilePath() {
+        return historyFilePath;
+    }
 
-	public List<URL> getLibraryDirs() {
-		return libraryDirs;
-	}
+    public String getUpdateStatement() {
+        return updateStatement;
+    }
 
-	public String getUpdateStatement() {
-		return updateStatement;
-	}
+    public Properties getSessionConfig() {
+        return sessionConfig;
+    }
 
-	public String getHistoryFilePath() {
-		return historyFilePath;
-	}
+    /** Command option lines to configure SQL Client in the embedded mode. */
+    public static class EmbeddedCliOptions extends CliOptions {
 
-	public Configuration getPythonConfiguration() {
-		return pythonConfiguration;
-	}
+        private final List<URL> jars;
+        private final List<URL> libraryDirs;
+
+        private final Configuration pythonConfiguration;
+
+        public EmbeddedCliOptions(
+                boolean isPrintHelp,
+                String sessionId,
+                URL initFile,
+                URL sqlFile,
+                String updateStatement,
+                String historyFilePath,
+                List<URL> jars,
+                List<URL> libraryDirs,
+                Configuration pythonConfiguration,
+                Properties sessionConfig) {
+            super(
+                    isPrintHelp,
+                    sessionId,
+                    initFile,
+                    sqlFile,
+                    updateStatement,
+                    historyFilePath,
+                    sessionConfig);
+            this.jars = jars;
+            this.libraryDirs = libraryDirs;
+            this.pythonConfiguration = pythonConfiguration;
+        }
+
+        public List<URL> getJars() {
+            return jars;
+        }
+
+        public List<URL> getLibraryDirs() {
+            return libraryDirs;
+        }
+
+        public Configuration getPythonConfiguration() {
+            return pythonConfiguration;
+        }
+    }
+
+    /** Command option lines to configure SQL Client in the gateway mode. */
+    public static class GatewayCliOptions extends CliOptions {
+
+        private final @Nullable URL gatewayAddress;
+
+        GatewayCliOptions(
+                boolean isPrintHelp,
+                String sessionId,
+                URL initFile,
+                URL sqlFile,
+                String updateStatement,
+                String historyFilePath,
+                @Nullable URL gatewayAddress,
+                Properties sessionConfig) {
+            super(
+                    isPrintHelp,
+                    sessionId,
+                    initFile,
+                    sqlFile,
+                    updateStatement,
+                    historyFilePath,
+                    sessionConfig);
+            this.gatewayAddress = gatewayAddress;
+        }
+
+        public Optional<URL> getGatewayAddress() {
+            return Optional.ofNullable(gatewayAddress);
+        }
+    }
 }

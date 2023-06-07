@@ -18,25 +18,37 @@
 
 package org.apache.flink.runtime.dispatcher;
 
+import org.apache.flink.runtime.dispatcher.cleanup.CheckpointResourcesCleanupRunnerFactory;
+import org.apache.flink.runtime.jobgraph.JobGraph;
+import org.apache.flink.runtime.jobmaster.JobResult;
 import org.apache.flink.runtime.rpc.RpcService;
 
-/**
- * {@link DispatcherFactory} which creates a {@link StandaloneDispatcher}.
- */
-public enum SessionDispatcherFactory implements DispatcherFactory {
-	INSTANCE;
+import java.util.Collection;
 
-	@Override
-	public StandaloneDispatcher createDispatcher(
-			RpcService rpcService,
-			DispatcherId fencingToken,
-			DispatcherBootstrap dispatcherBootstrap,
-			PartialDispatcherServicesWithJobGraphStore partialDispatcherServicesWithJobGraphStore) throws Exception {
-		// create the default dispatcher
-		return new StandaloneDispatcher(
-			rpcService,
-			fencingToken,
-			dispatcherBootstrap,
-			DispatcherServices.from(partialDispatcherServicesWithJobGraphStore, DefaultJobManagerRunnerFactory.INSTANCE));
-	}
+/** {@link DispatcherFactory} which creates a {@link StandaloneDispatcher}. */
+public enum SessionDispatcherFactory implements DispatcherFactory {
+    INSTANCE;
+
+    @Override
+    public StandaloneDispatcher createDispatcher(
+            RpcService rpcService,
+            DispatcherId fencingToken,
+            Collection<JobGraph> recoveredJobs,
+            Collection<JobResult> recoveredDirtyJobResults,
+            DispatcherBootstrapFactory dispatcherBootstrapFactory,
+            PartialDispatcherServicesWithJobPersistenceComponents
+                    partialDispatcherServicesWithJobPersistenceComponents)
+            throws Exception {
+        // create the default dispatcher
+        return new StandaloneDispatcher(
+                rpcService,
+                fencingToken,
+                recoveredJobs,
+                recoveredDirtyJobResults,
+                dispatcherBootstrapFactory,
+                DispatcherServices.from(
+                        partialDispatcherServicesWithJobPersistenceComponents,
+                        JobMasterServiceLeadershipRunnerFactory.INSTANCE,
+                        CheckpointResourcesCleanupRunnerFactory.INSTANCE));
+    }
 }

@@ -20,26 +20,21 @@ package org.apache.flink.runtime.dispatcher;
 
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.runtime.jobgraph.JobGraph;
+import org.apache.flink.runtime.jobgraph.JobResourceRequirements;
 import org.apache.flink.runtime.jobmanager.JobGraphWriter;
 
-/**
- * Testing implementation of {@link JobGraphWriter} which does nothing.
- */
+/** Testing implementation of {@link JobGraphWriter} which does nothing. */
 public enum NoOpJobGraphWriter implements JobGraphWriter {
-	INSTANCE;
+    INSTANCE;
 
-	@Override
-	public void putJobGraph(JobGraph jobGraph) throws Exception {
+    @Override
+    public void putJobGraph(JobGraph jobGraph) {
+        // No-op.
+    }
 
-	}
-
-	@Override
-	public void removeJobGraph(JobID jobId) throws Exception {
-
-	}
-
-	@Override
-	public void releaseJobGraph(JobID jobId) throws Exception {
-
-	}
+    @Override
+    public void putJobResourceRequirements(
+            JobID jobId, JobResourceRequirements jobResourceRequirements) {
+        // No-op.
+    }
 }

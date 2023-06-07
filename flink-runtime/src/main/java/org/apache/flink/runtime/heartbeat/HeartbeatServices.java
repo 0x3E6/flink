@@ -21,8 +21,7 @@ package org.apache.flink.runtime.heartbeat;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.HeartbeatManagerOptions;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
-import org.apache.flink.runtime.concurrent.ScheduledExecutor;
-import org.apache.flink.util.Preconditions;
+import org.apache.flink.util.concurrent.ScheduledExecutor;
 
 import org.slf4j.Logger;
 
@@ -30,87 +29,64 @@ import org.slf4j.Logger;
  * HeartbeatServices gives access to all services needed for heartbeating. This includes the
  * creation of heartbeat receivers and heartbeat senders.
  */
-public class HeartbeatServices {
+public interface HeartbeatServices {
 
-	/** Heartbeat interval for the created services. */
-	protected final long heartbeatInterval;
+    /**
+     * Creates a heartbeat manager which does not actively send heartbeats.
+     *
+     * @param resourceId Resource Id which identifies the owner of the heartbeat manager
+     * @param heartbeatListener Listener which will be notified upon heartbeat timeouts for
+     *     registered targets
+     * @param mainThreadExecutor Scheduled executor to be used for scheduling heartbeat timeouts
+     * @param log Logger to be used for the logging
+     * @param <I> Type of the incoming payload
+     * @param <O> Type of the outgoing payload
+     * @return A new HeartbeatManager instance
+     */
+    <I, O> HeartbeatManager<I, O> createHeartbeatManager(
+            ResourceID resourceId,
+            HeartbeatListener<I, O> heartbeatListener,
+            ScheduledExecutor mainThreadExecutor,
+            Logger log);
 
-	/** Heartbeat timeout for the created services. */
-	protected final long heartbeatTimeout;
+    /**
+     * Creates a heartbeat manager which actively sends heartbeats to monitoring targets.
+     *
+     * @param resourceId Resource Id which identifies the owner of the heartbeat manager
+     * @param heartbeatListener Listener which will be notified upon heartbeat timeouts for
+     *     registered targets
+     * @param mainThreadExecutor Scheduled executor to be used for scheduling heartbeat timeouts and
+     *     periodically send heartbeat requests
+     * @param log Logger to be used for the logging
+     * @param <I> Type of the incoming payload
+     * @param <O> Type of the outgoing payload
+     * @return A new HeartbeatManager instance which actively sends heartbeats
+     */
+    <I, O> HeartbeatManager<I, O> createHeartbeatManagerSender(
+            ResourceID resourceId,
+            HeartbeatListener<I, O> heartbeatListener,
+            ScheduledExecutor mainThreadExecutor,
+            Logger log);
 
-	public HeartbeatServices(long heartbeatInterval, long heartbeatTimeout) {
-		Preconditions.checkArgument(0L < heartbeatInterval, "The heartbeat interval must be larger than 0.");
-		Preconditions.checkArgument(heartbeatInterval <= heartbeatTimeout, "The heartbeat timeout should be larger or equal than the heartbeat interval.");
+    /**
+     * Creates an HeartbeatServices instance from a {@link Configuration}.
+     *
+     * @param configuration Configuration to be used for the HeartbeatServices creation
+     * @return An HeartbeatServices instance created from the given configuration
+     */
+    static HeartbeatServices fromConfiguration(Configuration configuration) {
+        long heartbeatInterval = configuration.getLong(HeartbeatManagerOptions.HEARTBEAT_INTERVAL);
 
-		this.heartbeatInterval = heartbeatInterval;
-		this.heartbeatTimeout = heartbeatTimeout;
-	}
+        long heartbeatTimeout = configuration.getLong(HeartbeatManagerOptions.HEARTBEAT_TIMEOUT);
 
-	/**
-	 * Creates a heartbeat manager which does not actively send heartbeats.
-	 *
-	 * @param resourceId Resource Id which identifies the owner of the heartbeat manager
-	 * @param heartbeatListener Listener which will be notified upon heartbeat timeouts for registered
-	 *                          targets
-	 * @param mainThreadExecutor Scheduled executor to be used for scheduling heartbeat timeouts
-	 * @param log Logger to be used for the logging
-	 * @param <I> Type of the incoming payload
-	 * @param <O> Type of the outgoing payload
-	 * @return A new HeartbeatManager instance
-	 */
-	public <I, O> HeartbeatManager<I, O> createHeartbeatManager(
-		ResourceID resourceId,
-		HeartbeatListener<I, O> heartbeatListener,
-		ScheduledExecutor mainThreadExecutor,
-		Logger log) {
+        int failedRpcRequestsUntilUnreachable =
+                configuration.get(HeartbeatManagerOptions.HEARTBEAT_RPC_FAILURE_THRESHOLD);
 
-		return new HeartbeatManagerImpl<>(
-			heartbeatTimeout,
-			resourceId,
-			heartbeatListener,
-			mainThreadExecutor,
-			log);
-	}
+        return new HeartbeatServicesImpl(
+                heartbeatInterval, heartbeatTimeout, failedRpcRequestsUntilUnreachable);
+    }
 
-	/**
-	 * Creates a heartbeat manager which actively sends heartbeats to monitoring targets.
-	 *
-	 * @param resourceId Resource Id which identifies the owner of the heartbeat manager
-	 * @param heartbeatListener Listener which will be notified upon heartbeat timeouts for registered
-	 *                          targets
-	 * @param mainThreadExecutor Scheduled executor to be used for scheduling heartbeat timeouts and
-	 *                           periodically send heartbeat requests
-	 * @param log Logger to be used for the logging
-	 * @param <I> Type of the incoming payload
-	 * @param <O> Type of the outgoing payload
-	 * @return A new HeartbeatManager instance which actively sends heartbeats
-	 */
-	public <I, O> HeartbeatManager<I, O> createHeartbeatManagerSender(
-		ResourceID resourceId,
-		HeartbeatListener<I, O> heartbeatListener,
-		ScheduledExecutor mainThreadExecutor,
-		Logger log) {
-
-		return new HeartbeatManagerSenderImpl<>(
-			heartbeatInterval,
-			heartbeatTimeout,
-			resourceId,
-			heartbeatListener,
-			mainThreadExecutor,
-			log);
-	}
-
-	/**
-	 * Creates an HeartbeatServices instance from a {@link Configuration}.
-	 *
-	 * @param configuration Configuration to be used for the HeartbeatServices creation
-	 * @return An HeartbeatServices instance created from the given configuration
-	 */
-	public static HeartbeatServices fromConfiguration(Configuration configuration) {
-		long heartbeatInterval = configuration.getLong(HeartbeatManagerOptions.HEARTBEAT_INTERVAL);
-
-		long heartbeatTimeout = configuration.getLong(HeartbeatManagerOptions.HEARTBEAT_TIMEOUT);
-
-		return new HeartbeatServices(heartbeatInterval, heartbeatTimeout);
-	}
+    static HeartbeatServices noOp() {
+        return NoOpHeartbeatServices.getInstance();
+    }
 }

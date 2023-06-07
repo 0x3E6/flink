@@ -19,7 +19,7 @@
 package org.apache.flink.runtime.heartbeat;
 
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
-import org.apache.flink.runtime.concurrent.ScheduledExecutor;
+import org.apache.flink.util.concurrent.ScheduledExecutor;
 
 import org.slf4j.Logger;
 
@@ -28,195 +28,230 @@ import java.util.Collection;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+import static org.apache.flink.configuration.HeartbeatManagerOptions.FAILED_RPC_DETECTION_DISABLED;
 import static org.apache.flink.util.Preconditions.checkState;
 
 /**
- * A {@link HeartbeatServices} implementation for testing purposes.
- * This implementation is able to trigger a timeout of specific component manually.
+ * A {@link HeartbeatServices} implementation for testing purposes. This implementation is able to
+ * trigger a timeout of specific component manually.
  */
-public class TestingHeartbeatServices extends HeartbeatServices {
+public class TestingHeartbeatServices implements HeartbeatServices {
 
-	private static final long DEFAULT_HEARTBEAT_TIMEOUT = 10000L;
+    /** Heartbeat interval for the created services. */
+    private final long heartbeatInterval;
 
-	private static final long DEFAULT_HEARTBEAT_INTERVAL = 1000L;
+    /** Heartbeat timeout for the created services. */
+    private final long heartbeatTimeout;
 
-	private final Map<ResourceID, Collection<HeartbeatManagerImpl>> heartbeatManagers = new ConcurrentHashMap<>();
+    private static final long DEFAULT_HEARTBEAT_TIMEOUT = 10000L;
 
-	private final Map<ResourceID, Collection<HeartbeatManagerSenderImpl>> heartbeatManagerSenders = new ConcurrentHashMap<>();
+    private static final long DEFAULT_HEARTBEAT_INTERVAL = 1000L;
 
-	public TestingHeartbeatServices() {
-		super(DEFAULT_HEARTBEAT_INTERVAL, DEFAULT_HEARTBEAT_TIMEOUT);
-	}
+    private final Map<ResourceID, Collection<HeartbeatManagerImpl>> heartbeatManagers =
+            new ConcurrentHashMap<>();
 
-	public TestingHeartbeatServices(long heartbeatInterval) {
-		super(heartbeatInterval, DEFAULT_HEARTBEAT_TIMEOUT);
-	}
+    private final Map<ResourceID, Collection<HeartbeatManagerSenderImpl>> heartbeatManagerSenders =
+            new ConcurrentHashMap<>();
 
-	public TestingHeartbeatServices(long heartbeatInterval, long heartbeatTimeout) {
-		super(heartbeatInterval, heartbeatTimeout);
-	}
+    public TestingHeartbeatServices() {
+        this(DEFAULT_HEARTBEAT_INTERVAL, DEFAULT_HEARTBEAT_TIMEOUT);
+    }
 
-	@Override
-	public <I, O> HeartbeatManager<I, O> createHeartbeatManager(
-		ResourceID resourceId,
-		HeartbeatListener<I, O> heartbeatListener,
-		ScheduledExecutor mainThreadExecutor,
-		Logger log) {
+    public TestingHeartbeatServices(long heartbeatInterval) {
+        this(heartbeatInterval, DEFAULT_HEARTBEAT_TIMEOUT);
+    }
 
-		HeartbeatManagerImpl<I, O> heartbeatManager = new HeartbeatManagerImpl<>(
-			heartbeatTimeout,
-			resourceId,
-			heartbeatListener,
-			mainThreadExecutor,
-			log,
-			new TestingHeartbeatMonitorFactory<>());
+    public TestingHeartbeatServices(long heartbeatInterval, long heartbeatTimeout) {
+        this.heartbeatInterval = heartbeatInterval;
+        this.heartbeatTimeout = heartbeatTimeout;
+    }
 
-		heartbeatManagers.compute(resourceId, (resourceID, heartbeatManagers) -> {
-			final Collection<HeartbeatManagerImpl> result;
+    @Override
+    public <I, O> HeartbeatManager<I, O> createHeartbeatManager(
+            ResourceID resourceId,
+            HeartbeatListener<I, O> heartbeatListener,
+            ScheduledExecutor mainThreadExecutor,
+            Logger log) {
 
-			if (heartbeatManagers != null) {
-				result = heartbeatManagers;
-			} else {
-				result = new ArrayList<>();
-			}
+        HeartbeatManagerImpl<I, O> heartbeatManager =
+                new HeartbeatManagerImpl<>(
+                        heartbeatTimeout,
+                        FAILED_RPC_DETECTION_DISABLED,
+                        resourceId,
+                        heartbeatListener,
+                        mainThreadExecutor,
+                        log,
+                        new TestingHeartbeatMonitorFactory<>());
 
-			result.add(heartbeatManager);
-			return result;
-		});
+        heartbeatManagers.compute(
+                resourceId,
+                (resourceID, heartbeatManagers) -> {
+                    final Collection<HeartbeatManagerImpl> result;
 
-		return heartbeatManager;
-	}
+                    if (heartbeatManagers != null) {
+                        result = heartbeatManagers;
+                    } else {
+                        result = new ArrayList<>();
+                    }
 
-	@Override
-	public <I, O> HeartbeatManager<I, O> createHeartbeatManagerSender(
-		ResourceID resourceId,
-		HeartbeatListener<I, O> heartbeatListener,
-		ScheduledExecutor mainThreadExecutor,
-		Logger log) {
+                    result.add(heartbeatManager);
+                    return result;
+                });
 
-		HeartbeatManagerSenderImpl<I, O> heartbeatManager = new HeartbeatManagerSenderImpl<>(
-			heartbeatInterval,
-			heartbeatTimeout,
-			resourceId,
-			heartbeatListener,
-			mainThreadExecutor,
-			log,
-			new TestingHeartbeatMonitorFactory<>());
+        return heartbeatManager;
+    }
 
-		heartbeatManagerSenders.compute(resourceId, (resourceID, heartbeatManagers) -> {
-			final Collection<HeartbeatManagerSenderImpl> result;
+    @Override
+    public <I, O> HeartbeatManager<I, O> createHeartbeatManagerSender(
+            ResourceID resourceId,
+            HeartbeatListener<I, O> heartbeatListener,
+            ScheduledExecutor mainThreadExecutor,
+            Logger log) {
 
-			if (heartbeatManagers != null) {
-				result = heartbeatManagers;
-			} else {
-				result = new ArrayList<>();
-			}
+        HeartbeatManagerSenderImpl<I, O> heartbeatManager =
+                new HeartbeatManagerSenderImpl<>(
+                        heartbeatInterval,
+                        heartbeatTimeout,
+                        FAILED_RPC_DETECTION_DISABLED,
+                        resourceId,
+                        heartbeatListener,
+                        mainThreadExecutor,
+                        log,
+                        new TestingHeartbeatMonitorFactory<>());
 
-			result.add(heartbeatManager);
-			return result;
-		});
+        heartbeatManagerSenders.compute(
+                resourceId,
+                (resourceID, heartbeatManagers) -> {
+                    final Collection<HeartbeatManagerSenderImpl> result;
 
-		return heartbeatManager;
-	}
+                    if (heartbeatManagers != null) {
+                        result = heartbeatManagers;
+                    } else {
+                        result = new ArrayList<>();
+                    }
 
-	public void triggerHeartbeatTimeout(ResourceID managerResourceId, ResourceID targetResourceId) {
+                    result.add(heartbeatManager);
+                    return result;
+                });
 
-		boolean triggered = false;
-		Collection<HeartbeatManagerImpl> heartbeatManagerList = heartbeatManagers.get(managerResourceId);
-		if (heartbeatManagerList != null) {
-			for (HeartbeatManagerImpl heartbeatManager : heartbeatManagerList) {
-				final TestingHeartbeatMonitor monitor =
-					(TestingHeartbeatMonitor) heartbeatManager.getHeartbeatTargets().get(targetResourceId);
-				if (monitor != null) {
-					monitor.triggerHeartbeatTimeout();
-					triggered = true;
-				}
-			}
-		}
+        return heartbeatManager;
+    }
 
-		final Collection<HeartbeatManagerSenderImpl> heartbeatManagerSenderList = this.heartbeatManagerSenders.get(managerResourceId);
-		if (heartbeatManagerSenderList != null) {
-			for (HeartbeatManagerSenderImpl heartbeatManagerSender : heartbeatManagerSenderList) {
-				final TestingHeartbeatMonitor monitor =
-					(TestingHeartbeatMonitor) heartbeatManagerSender.getHeartbeatTargets().get(targetResourceId);
-				if (monitor != null) {
-					monitor.triggerHeartbeatTimeout();
-					triggered = true;
-				}
-			}
-		}
+    public void triggerHeartbeatTimeout(ResourceID managerResourceId, ResourceID targetResourceId) {
 
-		checkState(triggered,
-			"There is no target " + targetResourceId + " monitored under Heartbeat manager " + managerResourceId);
-	}
+        boolean triggered = false;
+        Collection<HeartbeatManagerImpl> heartbeatManagerList =
+                heartbeatManagers.get(managerResourceId);
+        if (heartbeatManagerList != null) {
+            for (HeartbeatManagerImpl heartbeatManager : heartbeatManagerList) {
+                final TestingHeartbeatMonitor monitor =
+                        (TestingHeartbeatMonitor)
+                                heartbeatManager.getHeartbeatTargets().get(targetResourceId);
+                if (monitor != null) {
+                    monitor.triggerHeartbeatTimeout();
+                    triggered = true;
+                }
+            }
+        }
 
-	/**
-	 * Factory instantiates testing monitor instance.
-	 *
-	 * @param <O> Type of the outgoing heartbeat payload
-	 */
-	static class TestingHeartbeatMonitorFactory<O> implements HeartbeatMonitor.Factory<O> {
+        final Collection<HeartbeatManagerSenderImpl> heartbeatManagerSenderList =
+                this.heartbeatManagerSenders.get(managerResourceId);
+        if (heartbeatManagerSenderList != null) {
+            for (HeartbeatManagerSenderImpl heartbeatManagerSender : heartbeatManagerSenderList) {
+                final TestingHeartbeatMonitor monitor =
+                        (TestingHeartbeatMonitor)
+                                heartbeatManagerSender.getHeartbeatTargets().get(targetResourceId);
+                if (monitor != null) {
+                    monitor.triggerHeartbeatTimeout();
+                    triggered = true;
+                }
+            }
+        }
 
-		@Override
-		public HeartbeatMonitor<O> createHeartbeatMonitor(
-			ResourceID resourceID,
-			HeartbeatTarget<O> heartbeatTarget,
-			ScheduledExecutor mainThreadExecutor,
-			HeartbeatListener<?, O> heartbeatListener,
-			long heartbeatTimeoutIntervalMs) {
+        checkState(
+                triggered,
+                "There is no target "
+                        + targetResourceId
+                        + " monitored under Heartbeat manager "
+                        + managerResourceId);
+    }
 
-			return new TestingHeartbeatMonitor<>(
-				resourceID,
-				heartbeatTarget,
-				mainThreadExecutor,
-				heartbeatListener,
-				heartbeatTimeoutIntervalMs);
-		}
-	}
+    /**
+     * Factory instantiates testing monitor instance.
+     *
+     * @param <O> Type of the outgoing heartbeat payload
+     */
+    static class TestingHeartbeatMonitorFactory<O> implements HeartbeatMonitor.Factory<O> {
 
-	/**
-	 * A heartbeat monitor for testing which supports triggering timeout manually.
-	 *
-	 * @param <O> Type of the outgoing heartbeat payload
-	 */
-	static class TestingHeartbeatMonitor<O> extends HeartbeatMonitorImpl<O> {
+        @Override
+        public HeartbeatMonitor<O> createHeartbeatMonitor(
+                ResourceID resourceID,
+                HeartbeatTarget<O> heartbeatTarget,
+                ScheduledExecutor mainThreadExecutor,
+                HeartbeatListener<?, O> heartbeatListener,
+                long heartbeatTimeoutIntervalMs,
+                int failedRpcRequestsUntilUnreachable) {
 
-		private volatile boolean timeoutTriggered = false;
+            return new TestingHeartbeatMonitor<>(
+                    resourceID,
+                    heartbeatTarget,
+                    mainThreadExecutor,
+                    heartbeatListener,
+                    heartbeatTimeoutIntervalMs,
+                    failedRpcRequestsUntilUnreachable);
+        }
+    }
 
-		TestingHeartbeatMonitor(
-			ResourceID resourceID,
-			HeartbeatTarget<O> heartbeatTarget,
-			ScheduledExecutor scheduledExecutor,
-			HeartbeatListener<?, O> heartbeatListener,
-			long heartbeatTimeoutIntervalMs) {
+    /**
+     * A heartbeat monitor for testing which supports triggering timeout manually.
+     *
+     * @param <O> Type of the outgoing heartbeat payload
+     */
+    static class TestingHeartbeatMonitor<O> extends DefaultHeartbeatMonitor<O> {
 
-			super(resourceID, heartbeatTarget, scheduledExecutor, heartbeatListener, heartbeatTimeoutIntervalMs);
-		}
+        private volatile boolean timeoutTriggered = false;
 
-		@Override
-		public void reportHeartbeat() {
-			if (!timeoutTriggered) {
-				super.reportHeartbeat();
-			}
-			// just swallow the heartbeat report
-		}
+        TestingHeartbeatMonitor(
+                ResourceID resourceID,
+                HeartbeatTarget<O> heartbeatTarget,
+                ScheduledExecutor scheduledExecutor,
+                HeartbeatListener<?, O> heartbeatListener,
+                long heartbeatTimeoutIntervalMs,
+                int failedRpcRequestsUntilUnreachable) {
 
-		@Override
-		void resetHeartbeatTimeout(long heartbeatTimeout) {
-			synchronized (this) {
-				if (timeoutTriggered) {
-					super.resetHeartbeatTimeout(0);
-				} else {
-					super.resetHeartbeatTimeout(heartbeatTimeout);
-				}
-			}
-		}
+            super(
+                    resourceID,
+                    heartbeatTarget,
+                    scheduledExecutor,
+                    heartbeatListener,
+                    heartbeatTimeoutIntervalMs,
+                    failedRpcRequestsUntilUnreachable);
+        }
 
-		void triggerHeartbeatTimeout() {
-			synchronized (this) {
-				timeoutTriggered = true;
-				resetHeartbeatTimeout(0);
-			}
-		}
-	}
+        @Override
+        public void reportHeartbeat() {
+            if (!timeoutTriggered) {
+                super.reportHeartbeat();
+            }
+            // just swallow the heartbeat report
+        }
+
+        @Override
+        void resetHeartbeatTimeout(long heartbeatTimeout) {
+            synchronized (this) {
+                if (timeoutTriggered) {
+                    super.resetHeartbeatTimeout(0);
+                } else {
+                    super.resetHeartbeatTimeout(heartbeatTimeout);
+                }
+            }
+        }
+
+        void triggerHeartbeatTimeout() {
+            synchronized (this) {
+                timeoutTriggered = true;
+                resetHeartbeatTimeout(0);
+            }
+        }
+    }
 }

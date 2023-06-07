@@ -35,64 +35,64 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Util class for the OrcBulkWriter tests.
- */
+/** Util class for the OrcBulkWriter tests. */
 public class OrcBulkWriterTestUtil {
 
-	public static final String USER_METADATA_KEY = "userKey";
-	public static final ByteBuffer USER_METADATA_VALUE = ByteBuffer.wrap("hello".getBytes());
+    public static final String USER_METADATA_KEY = "userKey";
+    public static final ByteBuffer USER_METADATA_VALUE = ByteBuffer.wrap("hello".getBytes());
 
-	public static void validate(File files, List<Record> expected) throws IOException {
-		final File[] buckets = files.listFiles();
-		assertNotNull(buckets);
-		assertEquals(1, buckets.length);
+    public static void validate(File files, List<Record> expected) throws IOException {
+        final File[] buckets = files.listFiles();
+        assertThat(buckets).isNotNull();
+        assertThat(buckets).hasSize(1);
 
-		final File[] partFiles = buckets[0].listFiles();
-		assertNotNull(partFiles);
+        final File[] partFiles = buckets[0].listFiles();
+        assertThat(partFiles).isNotNull();
 
-		for (File partFile : partFiles) {
-			assertTrue(partFile.length() > 0);
+        for (File partFile : partFiles) {
+            assertThat(partFile.length()).isGreaterThan(0);
 
-			OrcFile.ReaderOptions readerOptions = OrcFile.readerOptions(new Configuration());
-			Reader reader = OrcFile.createReader(new org.apache.hadoop.fs.Path(partFile.toURI()), readerOptions);
+            OrcFile.ReaderOptions readerOptions = OrcFile.readerOptions(new Configuration());
+            Reader reader =
+                    OrcFile.createReader(
+                            new org.apache.hadoop.fs.Path(partFile.toURI()), readerOptions);
 
-			assertEquals(3, reader.getNumberOfRows());
-			assertEquals(2, reader.getSchema().getFieldNames().size());
-			assertSame(reader.getCompressionKind(), CompressionKind.LZ4);
-			assertTrue(reader.hasMetadataValue(USER_METADATA_KEY));
-			assertTrue(reader.getMetadataKeys().contains(USER_METADATA_KEY));
+            assertThat(reader.getNumberOfRows()).isEqualTo(3);
+            assertThat(reader.getSchema().getFieldNames()).hasSize(2);
+            assertThat(reader.getCompressionKind()).isSameAs(CompressionKind.LZ4);
+            assertThat(reader.hasMetadataValue(USER_METADATA_KEY)).isTrue();
+            assertThat(reader.getMetadataKeys()).contains(USER_METADATA_KEY);
 
-			List<Record> results = getResults(reader);
+            List<Record> results = getResults(reader);
 
-			assertEquals(3, results.size());
-			assertEquals(results, expected);
-		}
-	}
+            assertThat(results).hasSize(3).isEqualTo(expected);
+        }
+    }
 
-	private static List<Record> getResults(Reader reader) throws IOException {
-		List<Record> results = new ArrayList<>();
+    private static List<Record> getResults(Reader reader) throws IOException {
+        List<Record> results = new ArrayList<>();
 
-		RecordReader recordReader = reader.rows();
-		VectorizedRowBatch batch = reader.getSchema().createRowBatch();
+        RecordReader recordReader = reader.rows();
+        VectorizedRowBatch batch = reader.getSchema().createRowBatch();
 
-		while (recordReader.nextBatch(batch)) {
-			BytesColumnVector stringVector = (BytesColumnVector)  batch.cols[0];
-			LongColumnVector intVector = (LongColumnVector) batch.cols[1];
-			for (int r = 0; r < batch.size; r++) {
-				String name = new String(stringVector.vector[r], stringVector.start[r], stringVector.length[r]);
-				int age = (int) intVector.vector[r];
+        while (recordReader.nextBatch(batch)) {
+            BytesColumnVector stringVector = (BytesColumnVector) batch.cols[0];
+            LongColumnVector intVector = (LongColumnVector) batch.cols[1];
+            for (int r = 0; r < batch.size; r++) {
+                String name =
+                        new String(
+                                stringVector.vector[r],
+                                stringVector.start[r],
+                                stringVector.length[r]);
+                int age = (int) intVector.vector[r];
 
-				results.add(new Record(name, age));
-			}
-			recordReader.close();
-		}
+                results.add(new Record(name, age));
+            }
+            recordReader.close();
+        }
 
-		return results;
-	}
+        return results;
+    }
 }

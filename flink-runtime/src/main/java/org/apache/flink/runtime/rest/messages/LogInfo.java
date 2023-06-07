@@ -27,53 +27,65 @@ import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonPro
 import java.io.Serializable;
 import java.util.Objects;
 
-/**
- * Contains information about one log of TaskManager.
- */
+/** Contains information about one log of TaskManager. */
 public class LogInfo implements Serializable {
 
-	public static final String NAME = "name";
+    public static final String NAME = "name";
 
-	public static final String SIZE = "size";
+    public static final String SIZE = "size";
 
-	private static final long serialVersionUID = -7371944349031708629L;
+    public static final String MTIME = "mtime";
 
-	@JsonProperty(NAME)
-	private final String name;
+    private static final long serialVersionUID = -7371944349031708629L;
 
-	@JsonProperty(SIZE)
-	private final long size;
+    @JsonProperty(NAME)
+    private final String name;
 
-	@JsonCreator
-	public LogInfo(@JsonProperty(NAME) String name, @JsonProperty(SIZE) long size) {
-		this.name = Preconditions.checkNotNull(name);
-		this.size = size;
-	}
+    @JsonProperty(SIZE)
+    private final long size;
 
-	@JsonIgnore
-	public String getName() {
-		return name;
-	}
+    @JsonProperty(MTIME)
+    private final long mtime;
 
-	@JsonIgnore
-	public long getSize() {
-		return size;
-	}
+    @JsonCreator
+    public LogInfo(
+            @JsonProperty(NAME) String name,
+            @JsonProperty(SIZE) long size,
+            @JsonProperty(MTIME) long mtime) {
+        this.name = Preconditions.checkNotNull(name);
+        this.size = size;
+        this.mtime = mtime;
+    }
 
-	@Override
-	public boolean equals(Object o) {
-		if (this == o) {
-			return true;
-		}
-		if (o == null || getClass() != o.getClass()) {
-			return false;
-		}
-		LogInfo that = (LogInfo) o;
-		return Objects.equals(name, that.name) && size == that.size;
-	}
+    @JsonIgnore
+    public String getName() {
+        return name;
+    }
 
-	@Override
-	public int hashCode() {
-		return Objects.hash(name, size);
-	}
+    @JsonIgnore
+    public long getSize() {
+        return size;
+    }
+
+    @JsonIgnore
+    public long getMtime() {
+        return mtime;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+        LogInfo that = (LogInfo) o;
+        return Objects.equals(name, that.name) && size == that.size && mtime == that.mtime;
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(name, size, mtime);
+    }
 }

@@ -28,12 +28,14 @@ import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.graph.StreamGraph;
 import org.apache.flink.testutils.ClassLoaderUtils;
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameter;
+import org.apache.flink.testutils.junit.extensions.parameterized.ParameterizedTestExtension;
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameters;
+import org.apache.flink.testutils.junit.utils.TempDirUtils;
 
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.net.URL;
@@ -44,151 +46,163 @@ import java.util.Collections;
 import java.util.List;
 import java.util.function.Function;
 
-import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Tests for {@link PackagedProgramUtils} methods that should be executed for
- * {@link StreamExecutionEnvironment} and {@link Environment}.
+ * Tests for {@link PackagedProgramUtils} methods that should be executed for {@link
+ * StreamExecutionEnvironment} and {@link Environment}.
  */
-@RunWith(Parameterized.class)
+@ExtendWith(ParameterizedTestExtension.class)
 public class PackagedProgramUtilsPipelineTest {
 
-	@Parameterized.Parameter
-	public TestParameter testParameter;
+    @Parameter public TestParameter testParameter;
 
-	@Rule
-	public TemporaryFolder temporaryFolder = new TemporaryFolder();
+    @TempDir private java.nio.file.Path temporaryFolder;
 
-	@Parameterized.Parameters
-	public static Collection<TestParameter> parameters() {
-		return Arrays.asList(
-			TestParameter.of(DataSetTestProgram.class, pipeline -> ((Plan) pipeline).getExecutionConfig()),
-			TestParameter.of(DataStreamTestProgram.class, pipeline -> ((StreamGraph) pipeline).getExecutionConfig())
-		);
-	}
+    @Parameters(name = "testParameter-{0}")
+    public static Collection<TestParameter> parameters() {
+        return Arrays.asList(
+                TestParameter.of(
+                        DataSetTestProgram.class,
+                        pipeline -> ((Plan) pipeline).getExecutionConfig()),
+                TestParameter.of(
+                        DataStreamTestProgram.class,
+                        pipeline -> ((StreamGraph) pipeline).getExecutionConfig()));
+    }
 
-	/**
-	 * This tests whether configuration forwarding from a {@link Configuration} to the environment
-	 * works.
-	 */
-	@Test
-	public void testConfigurationForwarding() throws Exception {
-		// we want to test forwarding with this config, ensure that the default is what we expect.
-		assertThat(
-			ExecutionEnvironment.getExecutionEnvironment().getConfig().isAutoTypeRegistrationDisabled(),
-			is(false));
+    /**
+     * This tests whether configuration forwarding from a {@link Configuration} to the environment
+     * works.
+     */
+    @TestTemplate
+    void testConfigurationForwarding() throws Exception {
+        // we want to test forwarding with this config, ensure that the default is what we expect.
+        assertThat(
+                        ExecutionEnvironment.getExecutionEnvironment()
+                                .getConfig()
+                                .isAutoTypeRegistrationDisabled())
+                .isFalse();
 
-		PackagedProgram packagedProgram = PackagedProgram.newBuilder()
-			.setEntryPointClassName(testParameter.entryClass().getName())
-			.build();
+        PackagedProgram packagedProgram =
+                PackagedProgram.newBuilder()
+                        .setEntryPointClassName(testParameter.entryClass().getName())
+                        .build();
 
-		Configuration config = new Configuration();
-		config.set(PipelineOptions.AUTO_TYPE_REGISTRATION, false);
+        Configuration config = new Configuration();
+        config.set(PipelineOptions.AUTO_TYPE_REGISTRATION, false);
 
-		Pipeline pipeline = PackagedProgramUtils.getPipelineFromProgram(
-			packagedProgram,
-			config,
-			1 /* parallelism */,
-			false /* suppress output */);
+        Pipeline pipeline =
+                PackagedProgramUtils.getPipelineFromProgram(
+                        packagedProgram, config, 1 /* parallelism */, false /* suppress output */);
 
-		ExecutionConfig executionConfig = testParameter.extractExecutionConfig(pipeline);
+        ExecutionConfig executionConfig = testParameter.extractExecutionConfig(pipeline);
 
-		// we want to test forwarding with this config, ensure that the default is what we expect.
-		assertThat(executionConfig.isAutoTypeRegistrationDisabled(), is(true));
-	}
+        // we want to test forwarding with this config, ensure that the default is what we expect.
+        assertThat(executionConfig.isAutoTypeRegistrationDisabled()).isTrue();
+    }
 
-	@Test
-	public void testUserClassloaderForConfiguration() throws Exception {
-		String userSerializerClassName = "UserSerializer";
-		List<URL> userUrls = getClassUrls(userSerializerClassName);
+    @TestTemplate
+    void testUserClassloaderForConfiguration() throws Exception {
+        String userSerializerClassName = "UserSerializer";
+        List<URL> userUrls = getClassUrls(userSerializerClassName);
 
-		PackagedProgram packagedProgram = PackagedProgram.newBuilder()
-			.setUserClassPaths(userUrls)
-			.setEntryPointClassName(testParameter.entryClass().getName())
-			.build();
+        PackagedProgram packagedProgram =
+                PackagedProgram.newBuilder()
+                        .setUserClassPaths(userUrls)
+                        .setEntryPointClassName(testParameter.entryClass().getName())
+                        .build();
 
-		Configuration config = new Configuration();
-		config.set(PipelineOptions.KRYO_DEFAULT_SERIALIZERS, Collections.singletonList(
-			String.format(
-				"class:%s,serializer:%s",
-				PackagedProgramUtilsPipelineTest.class.getName(),
-				userSerializerClassName)
-		));
+        Configuration config = new Configuration();
+        config.set(
+                PipelineOptions.KRYO_DEFAULT_SERIALIZERS,
+                Collections.singletonList(
+                        String.format(
+                                "class:%s,serializer:%s",
+                                PackagedProgramUtilsPipelineTest.class.getName(),
+                                userSerializerClassName)));
 
-		Pipeline pipeline = PackagedProgramUtils.getPipelineFromProgram(
-			packagedProgram,
-			config,
-			1 /* parallelism */,
-			false /* suppress output */);
+        Pipeline pipeline =
+                PackagedProgramUtils.getPipelineFromProgram(
+                        packagedProgram, config, 1 /* parallelism */, false /* suppress output */);
 
-		ExecutionConfig executionConfig = testParameter.extractExecutionConfig(pipeline);
+        ExecutionConfig executionConfig = testParameter.extractExecutionConfig(pipeline);
 
-		assertThat(
-			executionConfig.getDefaultKryoSerializerClasses().get(PackagedProgramUtilsPipelineTest.class).getName(),
-			is(userSerializerClassName));
-	}
+        assertThat(
+                        executionConfig
+                                .getDefaultKryoSerializerClasses()
+                                .get(PackagedProgramUtilsPipelineTest.class)
+                                .getName())
+                .isEqualTo(userSerializerClassName);
+    }
 
-	private List<URL> getClassUrls(String className) throws IOException {
-		URLClassLoader urlClassLoader = ClassLoaderUtils.compileAndLoadJava(
-			temporaryFolder.newFolder(),
-			className + ".java",
-			"import com.esotericsoftware.kryo.Kryo;\n" +
-				"import com.esotericsoftware.kryo.Serializer;\n" +
-				"import com.esotericsoftware.kryo.io.Input;\n" +
-				"import com.esotericsoftware.kryo.io.Output;\n"
-				+ "public class " + className + " extends Serializer {\n" +
-				"\t@Override\n" +
-				"\tpublic void write(\n" +
-				"\t\tKryo kryo,\n" +
-				"\t\tOutput output,\n" +
-				"\t\tObject object) {\n" +
-				"\t}\n" +
-				"\n" +
-				"\t@Override\n" +
-				"\tpublic Object read(Kryo kryo, Input input, Class type) {\n" +
-				"\t\treturn null;\n" +
-				"\t}\n" +
-				"}");
-		return Arrays.asList(urlClassLoader.getURLs());
-	}
+    private List<URL> getClassUrls(String className) throws IOException {
+        URLClassLoader urlClassLoader =
+                ClassLoaderUtils.compileAndLoadJava(
+                        TempDirUtils.newFolder(temporaryFolder),
+                        className + ".java",
+                        "import com.esotericsoftware.kryo.Kryo;\n"
+                                + "import com.esotericsoftware.kryo.Serializer;\n"
+                                + "import com.esotericsoftware.kryo.io.Input;\n"
+                                + "import com.esotericsoftware.kryo.io.Output;\n"
+                                + "public class "
+                                + className
+                                + " extends Serializer {\n"
+                                + "\t@Override\n"
+                                + "\tpublic void write(\n"
+                                + "\t\tKryo kryo,\n"
+                                + "\t\tOutput output,\n"
+                                + "\t\tObject object) {\n"
+                                + "\t}\n"
+                                + "\n"
+                                + "\t@Override\n"
+                                + "\tpublic Object read(Kryo kryo, Input input, Class type) {\n"
+                                + "\t\treturn null;\n"
+                                + "\t}\n"
+                                + "}");
+        return Arrays.asList(urlClassLoader.getURLs());
+    }
 
-	private interface TestParameter {
-		Class<?> entryClass();
+    private interface TestParameter {
+        Class<?> entryClass();
 
-		ExecutionConfig extractExecutionConfig(Pipeline pipeline);
+        ExecutionConfig extractExecutionConfig(Pipeline pipeline);
 
-		static TestParameter of(Class<?> entryClass, Function<Pipeline, ExecutionConfig> executionConfigExtractor) {
-			return new TestParameter() {
-				@Override
-				public Class<?> entryClass() {
-					return entryClass;
-				}
+        static TestParameter of(
+                Class<?> entryClass, Function<Pipeline, ExecutionConfig> executionConfigExtractor) {
+            return new TestParameter() {
+                @Override
+                public Class<?> entryClass() {
+                    return entryClass;
+                }
 
-				@Override
-				public ExecutionConfig extractExecutionConfig(Pipeline pipeline) {
-					return executionConfigExtractor.apply(pipeline);
-				}
-			};
-		}
-	}
+                @Override
+                public ExecutionConfig extractExecutionConfig(Pipeline pipeline) {
+                    return executionConfigExtractor.apply(pipeline);
+                }
 
-	/** Test Program for the DataSet API. */
-	public static class DataSetTestProgram {
-		public static void main(String[] args) throws Exception {
-			ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
-			env.fromElements("hello").print();
-			env.execute();
-		}
-	}
+                @Override
+                public String toString() {
+                    return entryClass.getSimpleName();
+                }
+            };
+        }
+    }
 
-	/** Test Program for the DataStream API. */
-	public static class DataStreamTestProgram {
-		public static void main(String[] args) throws Exception {
-			StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-			env.fromElements("hello").print();
-			env.execute();
-		}
-	}
+    /** Test Program for the DataSet API. */
+    public static class DataSetTestProgram {
+        public static void main(String[] args) throws Exception {
+            ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+            env.fromElements("hello").print();
+            env.execute();
+        }
+    }
 
+    /** Test Program for the DataStream API. */
+    public static class DataStreamTestProgram {
+        public static void main(String[] args) throws Exception {
+            StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+            env.fromElements("hello").print();
+            env.execute();
+        }
+    }
 }

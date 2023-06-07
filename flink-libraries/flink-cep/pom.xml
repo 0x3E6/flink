@@ -26,11 +26,10 @@ under the License.
     <parent>
         <groupId>org.apache.flink</groupId>
         <artifactId>flink-libraries</artifactId>
-        <version>1.12-SNAPSHOT</version>
-        <relativePath>..</relativePath>
+        <version>1.18-SNAPSHOT</version>
     </parent>
 
-    <artifactId>flink-cep_${scala.binary.version}</artifactId>
+    <artifactId>flink-cep</artifactId>
     <name>Flink : Libraries : CEP</name>
     <packaging>jar</packaging>
 
@@ -47,7 +46,7 @@ under the License.
 
         <dependency>
             <groupId>org.apache.flink</groupId>
-            <artifactId>flink-streaming-java_${scala.binary.version}</artifactId>
+            <artifactId>flink-streaming-java</artifactId>
             <version>${project.version}</version>
             <scope>provided</scope>
         </dependency>
@@ -69,14 +68,14 @@ under the License.
 
         <dependency>
             <groupId>org.apache.flink</groupId>
-            <artifactId>flink-test-utils_${scala.binary.version}</artifactId>
+            <artifactId>flink-test-utils</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
         </dependency>
         
         <dependency>
             <groupId>org.apache.flink</groupId>
-            <artifactId>flink-streaming-java_${scala.binary.version}</artifactId>
+            <artifactId>flink-streaming-java</artifactId>
             <version>${project.version}</version>
             <type>test-jar</type>
             <scope>test</scope>
@@ -84,7 +83,7 @@ under the License.
 
        <dependency>
             <groupId>org.apache.flink</groupId>
-            <artifactId>flink-runtime_${scala.binary.version}</artifactId>
+            <artifactId>flink-runtime</artifactId>
             <version>${project.version}</version>
             <type>test-jar</type>
             <scope>test</scope>
@@ -92,7 +91,14 @@ under the License.
 
         <dependency>
             <groupId>org.apache.flink</groupId>
-            <artifactId>flink-statebackend-rocksdb_${scala.binary.version}</artifactId>
+            <artifactId>flink-statebackend-rocksdb</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>fink-migration-test-utils</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
         </dependency>
@@ -113,4 +119,48 @@ under the License.
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <profile>
+            <id>generate-migration-test-data</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <artifactId>maven-antrun-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>generate-migration-test-data</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>run</goal>
+                                </goals>
+                                <configuration>
+                                    <target>
+                                        <condition property="optional.classes" value="--classes '${generate.classes}'"
+                                                   else="">
+                                            <isset property="generate.classes"/>
+                                        </condition>
+                                        <condition property="optional.prefixes"
+                                                   value="--prefixes '${generate.prefixes}'" else="">
+                                            <isset property="generate.prefixes"/>
+                                        </condition>
+                                        <java classname="org.apache.flink.test.migration.MigrationTestsSnapshotGenerator"
+                                              fork="true" failonerror="true" dir="${project.basedir}">
+                                            <classpath refid="maven.test.classpath"/>
+                                            <arg value="--dir"/>
+                                            <arg line="${project.basedir}"/>
+                                            <arg value="--version"/>
+                                            <arg value="${generate.version}"/>
+                                            <arg line="${optional.classes}"/>
+                                            <arg line="${optional.prefixes}"/>
+                                        </java>
+                                    </target>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

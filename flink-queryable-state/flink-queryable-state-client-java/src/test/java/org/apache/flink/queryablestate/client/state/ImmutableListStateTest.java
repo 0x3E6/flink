@@ -25,87 +25,78 @@ import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
 
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/**
- * Tests the {@link ImmutableListState}.
- */
-public class ImmutableListStateTest {
+/** Tests the {@link ImmutableListState}. */
+class ImmutableListStateTest {
 
-	private final ListStateDescriptor<Long> listStateDesc =
-			new ListStateDescriptor<>("test", BasicTypeInfo.LONG_TYPE_INFO);
+    private final ListStateDescriptor<Long> listStateDesc =
+            new ListStateDescriptor<>("test", BasicTypeInfo.LONG_TYPE_INFO);
 
-	private ListState<Long> listState;
+    private ListState<Long> listState;
 
-	@Before
-	public void setUp() throws Exception {
-		if (!listStateDesc.isSerializerInitialized()) {
-			listStateDesc.initializeSerializerUnlessSet(new ExecutionConfig());
-		}
+    @BeforeEach
+    void setUp() throws Exception {
+        if (!listStateDesc.isSerializerInitialized()) {
+            listStateDesc.initializeSerializerUnlessSet(new ExecutionConfig());
+        }
 
-		List<Long> init = new ArrayList<>();
-		init.add(42L);
+        List<Long> init = new ArrayList<>();
+        init.add(42L);
 
-		byte[] serInit = serializeInitValue(init);
-		listState = ImmutableListState.createState(listStateDesc, serInit);
-	}
+        byte[] serInit = serializeInitValue(init);
+        listState = ImmutableListState.createState(listStateDesc, serInit);
+    }
 
-	@Test(expected = UnsupportedOperationException.class)
-	public void testUpdate() throws Exception {
-		List<Long> list = getStateContents();
-		assertEquals(1L, list.size());
+    @Test
+    void testUpdate() throws Exception {
+        List<Long> list = getStateContents();
+        assertThat(list).containsExactly(42L);
+        assertThatThrownBy(() -> listState.add(54L))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
 
-		long element = list.get(0);
-		assertEquals(42L, element);
+    @Test
+    void testClear() throws Exception {
+        List<Long> list = getStateContents();
+        assertThat(list).containsExactly(42L);
+        assertThatThrownBy(() -> listState.clear())
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
 
-		listState.add(54L);
-	}
+    /** Copied from HeapListState.getSerializedValue(Object, Object). */
+    private byte[] serializeInitValue(List<Long> toSerialize) throws IOException {
+        TypeSerializer<Long> serializer = listStateDesc.getElementSerializer();
 
-	@Test(expected = UnsupportedOperationException.class)
-	public void testClear() throws Exception {
-		List<Long> list = getStateContents();
-		assertEquals(1L, list.size());
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        DataOutputViewStreamWrapper view = new DataOutputViewStreamWrapper(baos);
 
-		long element = list.get(0);
-		assertEquals(42L, element);
+        // write the same as RocksDB writes lists, with one ',' separator
+        for (int i = 0; i < toSerialize.size(); i++) {
+            serializer.serialize(toSerialize.get(i), view);
+            if (i < toSerialize.size() - 1) {
+                view.writeByte(',');
+            }
+        }
+        view.flush();
 
-		listState.clear();
-	}
+        return baos.toByteArray();
+    }
 
-	/**
-	 * Copied from HeapListState.getSerializedValue(Object, Object).
-	 */
-	private byte[] serializeInitValue(List<Long> toSerialize) throws IOException {
-		TypeSerializer<Long> serializer = listStateDesc.getElementSerializer();
-
-		ByteArrayOutputStream baos = new ByteArrayOutputStream();
-		DataOutputViewStreamWrapper view = new DataOutputViewStreamWrapper(baos);
-
-		// write the same as RocksDB writes lists, with one ',' separator
-		for (int i = 0; i < toSerialize.size(); i++) {
-			serializer.serialize(toSerialize.get(i), view);
-			if (i < toSerialize.size() - 1) {
-				view.writeByte(',');
-			}
-		}
-		view.flush();
-
-		return baos.toByteArray();
-	}
-
-	private List<Long> getStateContents() throws Exception {
-		List<Long> list = new ArrayList<>();
-		for (Long elem: listState.get()) {
-			list.add(elem);
-		}
-		return list;
-	}
+    private List<Long> getStateContents() throws Exception {
+        List<Long> list = new ArrayList<>();
+        for (Long elem : listState.get()) {
+            list.add(elem);
+        }
+        return list;
+    }
 }

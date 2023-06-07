@@ -25,6 +25,9 @@ import org.apache.flink.util.function.FunctionUtils;
 import org.apache.flink.util.function.SupplierWithException;
 import org.apache.flink.util.function.ThrowingRunnable;
 
+import org.junit.jupiter.api.extension.AfterAllCallback;
+import org.junit.jupiter.api.extension.BeforeAllCallback;
+import org.junit.jupiter.api.extension.ExtensionContext;
 import org.junit.rules.ExternalResource;
 
 import javax.annotation.Nonnull;
@@ -34,78 +37,109 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
-/**
- * Util to run test calls with a provided main thread executor.
- */
+/** Util to run test calls with a provided main thread executor. */
 public class TestingComponentMainThreadExecutor {
 
-	/** The main thread executor to which execution is delegated. */
-	@Nonnull
-	private final ComponentMainThreadExecutor mainThreadExecutor;
+    /** The main thread executor to which execution is delegated. */
+    @Nonnull private final ComponentMainThreadExecutor mainThreadExecutor;
 
-	public TestingComponentMainThreadExecutor(
-			@Nonnull ComponentMainThreadExecutor mainThreadExecutor) {
-		this.mainThreadExecutor = mainThreadExecutor;
-	}
+    public TestingComponentMainThreadExecutor(
+            @Nonnull ComponentMainThreadExecutor mainThreadExecutor) {
+        this.mainThreadExecutor = mainThreadExecutor;
+    }
 
-	/**
-	 * Executes the given supplier with the main thread executor until completion, returns the result or a exception.
-	 * This method blocks until the execution is complete.
-	 */
-	public <U> U execute(@Nonnull SupplierWithException<U, Throwable> supplierWithException) {
-		return CompletableFuture.supplyAsync(
-			FunctionUtils.uncheckedSupplier(supplierWithException),
-			mainThreadExecutor)
-			.join();
-	}
+    /**
+     * Executes the given supplier with the main thread executor until completion, returns the
+     * result or a exception. This method blocks until the execution is complete.
+     */
+    public <U> U execute(@Nonnull SupplierWithException<U, Throwable> supplierWithException) {
+        return CompletableFuture.supplyAsync(
+                        FunctionUtils.uncheckedSupplier(supplierWithException), mainThreadExecutor)
+                .join();
+    }
 
-	/**
-	 * Executes the given runnable with the main thread executor and blocks until completion.
-	 */
-	public void execute(@Nonnull ThrowingRunnable<Throwable> throwingRunnable) {
-		execute(() -> {
-			throwingRunnable.run();
-			return null;
-		});
-	}
+    /** Executes the given runnable with the main thread executor and blocks until completion. */
+    public void execute(@Nonnull ThrowingRunnable<Throwable> throwingRunnable) {
+        execute(
+                () -> {
+                    throwingRunnable.run();
+                    return null;
+                });
+    }
 
-	@Nonnull
-	public ComponentMainThreadExecutor getMainThreadExecutor() {
-		return mainThreadExecutor;
-	}
+    @Nonnull
+    public ComponentMainThreadExecutor getMainThreadExecutor() {
+        return mainThreadExecutor;
+    }
 
-	/**
-	 * Test resource for convenience.
-	 */
-	public static class Resource extends ExternalResource {
+    /** Test resource for convenience. */
+    public static class Resource extends ExternalResource {
 
-		private long shutdownTimeoutMillis;
-		private TestingComponentMainThreadExecutor componentMainThreadTestExecutor;
-		private ScheduledExecutorService innerExecutorService;
+        private long shutdownTimeoutMillis;
+        private TestingComponentMainThreadExecutor componentMainThreadTestExecutor;
+        private ScheduledExecutorService innerExecutorService;
 
-		public Resource() {
-			this(500L);
-		}
+        public Resource() {
+            this(500L);
+        }
 
-		public Resource(long shutdownTimeoutMillis) {
-			this.shutdownTimeoutMillis = shutdownTimeoutMillis;
-		}
+        public Resource(long shutdownTimeoutMillis) {
+            this.shutdownTimeoutMillis = shutdownTimeoutMillis;
+        }
 
-		@Override
-		protected void before() {
-			this.innerExecutorService = Executors.newSingleThreadScheduledExecutor();
-			this.componentMainThreadTestExecutor =
-				new TestingComponentMainThreadExecutor(
-					ComponentMainThreadExecutorServiceAdapter.forSingleThreadExecutor(innerExecutorService));
-		}
+        @Override
+        protected void before() {
+            this.innerExecutorService = Executors.newSingleThreadScheduledExecutor();
+            this.componentMainThreadTestExecutor =
+                    new TestingComponentMainThreadExecutor(
+                            ComponentMainThreadExecutorServiceAdapter.forSingleThreadExecutor(
+                                    innerExecutorService));
+        }
 
-		@Override
-		protected void after() {
-			ExecutorUtils.gracefulShutdown(shutdownTimeoutMillis, TimeUnit.MILLISECONDS, innerExecutorService);
-		}
+        @Override
+        protected void after() {
+            ExecutorUtils.gracefulShutdown(
+                    shutdownTimeoutMillis, TimeUnit.MILLISECONDS, innerExecutorService);
+        }
 
-		public TestingComponentMainThreadExecutor getComponentMainThreadTestExecutor() {
-			return componentMainThreadTestExecutor;
-		}
-	}
+        public TestingComponentMainThreadExecutor getComponentMainThreadTestExecutor() {
+            return componentMainThreadTestExecutor;
+        }
+    }
+
+    /** Test extension for convenience. */
+    public static class Extension implements BeforeAllCallback, AfterAllCallback {
+        private final long shutdownTimeoutMillis;
+
+        private TestingComponentMainThreadExecutor componentMainThreadTestExecutor;
+
+        private ScheduledExecutorService innerExecutorService;
+
+        public Extension() {
+            this(500L);
+        }
+
+        public Extension(long shutdownTimeoutMillis) {
+            this.shutdownTimeoutMillis = shutdownTimeoutMillis;
+        }
+
+        @Override
+        public void beforeAll(ExtensionContext extensionContext) throws Exception {
+            this.innerExecutorService = Executors.newSingleThreadScheduledExecutor();
+            this.componentMainThreadTestExecutor =
+                    new TestingComponentMainThreadExecutor(
+                            ComponentMainThreadExecutorServiceAdapter.forSingleThreadExecutor(
+                                    innerExecutorService));
+        }
+
+        @Override
+        public void afterAll(ExtensionContext extensionContext) throws Exception {
+            ExecutorUtils.gracefulShutdown(
+                    shutdownTimeoutMillis, TimeUnit.MILLISECONDS, innerExecutorService);
+        }
+
+        public TestingComponentMainThreadExecutor getComponentMainThreadTestExecutor() {
+            return componentMainThreadTestExecutor;
+        }
+    }
 }

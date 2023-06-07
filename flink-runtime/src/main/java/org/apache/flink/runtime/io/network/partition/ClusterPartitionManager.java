@@ -17,28 +17,49 @@
 
 package org.apache.flink.runtime.io.network.partition;
 
+import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
+import org.apache.flink.runtime.shuffle.ShuffleDescriptor;
+import org.apache.flink.runtime.taskexecutor.partition.ClusterPartitionReport;
 
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
-/**
- * Interface for components that manage cluster partitions.
- */
+/** Interface for components that manage cluster partitions. */
 public interface ClusterPartitionManager {
 
-	/**
-	 * Returns all datasets for which partitions are being tracked.
-	 *
-	 * @return tracked datasets
-	 */
-	CompletableFuture<Map<IntermediateDataSetID, DataSetMetaInfo>> listDataSets();
+    /**
+     * Returns all datasets for which partitions are being tracked.
+     *
+     * @return tracked datasets
+     */
+    CompletableFuture<Map<IntermediateDataSetID, DataSetMetaInfo>> listDataSets();
 
-	/**
-	 * Releases all partitions associated with the given dataset.
-	 *
-	 * @param dataSetToRelease dataset for which all associated partitions should be released
-	 * @return future that is completed once all partitions have been released
-	 */
-	CompletableFuture<Void> releaseClusterPartitions(IntermediateDataSetID dataSetToRelease);
+    /**
+     * Releases all partitions associated with the given dataset.
+     *
+     * @param dataSetToRelease dataset for which all associated partitions should be released
+     * @return future that is completed once all partitions have been released
+     */
+    CompletableFuture<Void> releaseClusterPartitions(IntermediateDataSetID dataSetToRelease);
+
+    /**
+     * Report the cluster partitions status in the task executor.
+     *
+     * @param taskExecutorId The id of the task executor.
+     * @param clusterPartitionReport The status of the cluster partitions.
+     * @return future that is completed once the report have been processed.
+     */
+    CompletableFuture<Void> reportClusterPartitions(
+            ResourceID taskExecutorId, ClusterPartitionReport clusterPartitionReport);
+
+    /**
+     * Get the shuffle descriptors of the cluster partitions ordered by partition number.
+     *
+     * @param intermediateDataSetID The id of the dataset.
+     * @return shuffle descriptors of the cluster partitions.
+     */
+    CompletableFuture<List<ShuffleDescriptor>> getClusterPartitionsShuffleDescriptors(
+            IntermediateDataSetID intermediateDataSetID);
 }

@@ -25,11 +25,11 @@ import time
 import unittest
 
 import grpc
-from apache_beam.portability.api.beam_provision_api_pb2 import (ProvisionInfo,
-                                                                GetProvisionInfoResponse)
-from apache_beam.portability.api.beam_provision_api_pb2_grpc import (
-    ProvisionServiceServicer, add_ProvisionServiceServicer_to_server)
 from concurrent import futures
+from apache_beam.portability.api.org.apache.beam.model.fn_execution.v1.beam_provision_api_pb2 \
+    import ProvisionInfo, GetProvisionInfoResponse
+from apache_beam.portability.api.org.apache.beam.model.fn_execution.v1.beam_provision_api_pb2_grpc \
+    import ProvisionServiceServicer, add_ProvisionServiceServicer_to_server
 from google.protobuf import json_format
 
 from pyflink.java_gateway import get_gateway
@@ -71,12 +71,12 @@ class PythonBootTests(PyFlinkTestCase):
 
         self.tmp_dir = tempfile.mkdtemp(str(time.time()), dir=self.tempdir)
         # assume that this file is in flink-python source code directory.
-        flink_python_source_root = os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        pyflink_package_dir = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         runner_script = "pyflink-udf-runner.bat" if on_windows() else \
             "pyflink-udf-runner.sh"
         self.runner_path = os.path.join(
-            flink_python_source_root, "bin", runner_script)
+            pyflink_package_dir, "bin", runner_script)
 
     def run_boot_py(self):
         args = [self.runner_path, "--id", "1",
@@ -101,22 +101,11 @@ class PythonBootTests(PyFlinkTestCase):
 
         args = [self.runner_path, "--id", "1"]
         exit_message = subprocess.check_output(args, env=self.env).decode("utf-8")
-        self.assertIn("No logging endpoint provided.", exit_message)
-
-        args = [self.runner_path, "--id", "1",
-                "--logging_endpoint", "localhost:0000"]
-        exit_message = subprocess.check_output(args, env=self.env).decode("utf-8")
         self.assertIn("No provision endpoint provided.", exit_message)
-
-        args = [self.runner_path, "--id", "1",
-                "--logging_endpoint", "localhost:0000",
-                "--provision_endpoint", "localhost:%d" % self.provision_port]
-        exit_message = subprocess.check_output(args, env=self.env).decode("utf-8")
-        self.assertIn("No control endpoint provided.", exit_message)
 
     def test_set_working_directory(self):
         JProcessPythonEnvironmentManager = \
-            get_gateway().jvm.org.apache.flink.python.env.beam.ProcessPythonEnvironmentManager
+            get_gateway().jvm.org.apache.flink.python.env.process.ProcessPythonEnvironmentManager
 
         output_file = os.path.join(self.tmp_dir, "output.txt")
         pyflink_dir = os.path.join(self.tmp_dir, "pyflink")

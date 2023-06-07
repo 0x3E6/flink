@@ -33,7 +33,7 @@ import org.apache.flink.streaming.api.TimerService;
  * org.apache.flink.api.common.functions.RichFunction}. Therefore, access to the {@link
  * org.apache.flink.api.common.functions.RuntimeContext} is always available and setup and teardown
  * methods can be implemented. See {@link
- * org.apache.flink.api.common.functions.RichFunction#open(Configuration)})} and {@link
+ * org.apache.flink.api.common.functions.RichFunction#open(Configuration)} and {@link
  * org.apache.flink.api.common.functions.RichFunction#close()}.
  *
  * @param <K> Type of the keys.
@@ -42,30 +42,29 @@ import org.apache.flink.streaming.api.TimerService;
 @PublicEvolving
 public abstract class KeyedStateBootstrapFunction<K, IN> extends AbstractRichFunction {
 
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	/**
-	 * Process one element from the input stream.
-	 *
-	 * <p>This function can update internal state or set timers using the {@link Context} parameter.
-	 *
-	 * @param value The input value.
-	 * @param ctx A {@link Context} that allows querying the timestamp of the element and getting a
-	 *     {@link TimerService} for registering timers and querying the time. The context is only
-	 *     valid during the invocation of this method, do not store it.
-	 * @throws Exception This method may throw exceptions. Throwing an exception will cause the
-	 *     operation to fail and may trigger recovery.
-	 */
-	public abstract void processElement(IN value, Context ctx) throws Exception;
+    /**
+     * Process one element from the input stream.
+     *
+     * <p>This function can update internal state or set timers using the {@link Context} parameter.
+     *
+     * @param value The input value.
+     * @param ctx A {@link Context} that allows querying the timestamp of the element and getting a
+     *     {@link TimerService} for registering timers and querying the time. The context is only
+     *     valid during the invocation of this method, do not store it.
+     * @throws Exception This method may throw exceptions. Throwing an exception will cause the
+     *     operation to fail and may trigger recovery.
+     */
+    public abstract void processElement(IN value, Context ctx) throws Exception;
 
-	/** Information available in an invocation of {@link #processElement(Object, Context)}. */
-	public abstract class Context {
+    /** Information available in an invocation of {@link #processElement(Object, Context)}. */
+    public abstract class Context {
 
-		/** A {@link TimerService} for querying time and registering timers. */
-		public abstract TimerService timerService();
+        /** A {@link TimerService} for querying time and registering timers. */
+        public abstract TimerService timerService();
 
-		/** Get key of the element being processed. */
-		public abstract K getCurrentKey();
-	}
+        /** Get key of the element being processed. */
+        public abstract K getCurrentKey();
+    }
 }
-

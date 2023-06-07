@@ -46,140 +46,150 @@ import static org.apache.flink.client.cli.ProgramOptionsUtils.containsPythonDepe
 import static org.apache.flink.client.cli.ProgramOptionsUtils.createPythonProgramOptions;
 import static org.apache.flink.client.cli.ProgramOptionsUtils.isPythonEntryPoint;
 
-/**
- * Base class for command line options that refer to a JAR file program.
- */
+/** Base class for command line options that refer to a JAR file program. */
 public class ProgramOptions extends CommandLineOptions {
 
-	private String jarFilePath;
+    private String jarFilePath;
 
-	protected String entryPointClass;
+    protected String entryPointClass;
 
-	private final List<URL> classpaths;
+    private final List<URL> classpaths;
 
-	private final String[] programArgs;
+    private final String[] programArgs;
 
-	private final int parallelism;
+    private final boolean hasParallelismOpt;
 
-	private final boolean detachedMode;
+    private final int parallelism;
 
-	private final boolean shutdownOnAttachedExit;
+    private final boolean detachedMode;
 
-	private final SavepointRestoreSettings savepointSettings;
+    private final boolean shutdownOnAttachedExit;
 
-	protected ProgramOptions(CommandLine line) throws CliArgsException {
-		super(line);
+    private final SavepointRestoreSettings savepointSettings;
 
-		this.entryPointClass = line.hasOption(CLASS_OPTION.getOpt()) ?
-			line.getOptionValue(CLASS_OPTION.getOpt()) : null;
+    protected ProgramOptions(CommandLine line) throws CliArgsException {
+        super(line);
 
-		this.jarFilePath = line.hasOption(JAR_OPTION.getOpt()) ?
-			line.getOptionValue(JAR_OPTION.getOpt()) : null;
+        this.entryPointClass =
+                line.hasOption(CLASS_OPTION.getOpt())
+                        ? line.getOptionValue(CLASS_OPTION.getOpt())
+                        : null;
 
-		this.programArgs = extractProgramArgs(line);
+        this.jarFilePath =
+                line.hasOption(JAR_OPTION.getOpt())
+                        ? line.getOptionValue(JAR_OPTION.getOpt())
+                        : null;
 
-		List<URL> classpaths = new ArrayList<URL>();
-		if (line.hasOption(CLASSPATH_OPTION.getOpt())) {
-			for (String path : line.getOptionValues(CLASSPATH_OPTION.getOpt())) {
-				try {
-					classpaths.add(new URL(path));
-				} catch (MalformedURLException e) {
-					throw new CliArgsException("Bad syntax for classpath: " + path);
-				}
-			}
-		}
-		this.classpaths = classpaths;
+        this.programArgs = extractProgramArgs(line);
 
-		if (line.hasOption(PARALLELISM_OPTION.getOpt())) {
-			String parString = line.getOptionValue(PARALLELISM_OPTION.getOpt());
-			try {
-				parallelism = Integer.parseInt(parString);
-				if (parallelism <= 0) {
-					throw new NumberFormatException();
-				}
-			}
-			catch (NumberFormatException e) {
-				throw new CliArgsException("The parallelism must be a positive number: " + parString);
-			}
-		}
-		else {
-			parallelism = ExecutionConfig.PARALLELISM_DEFAULT;
-		}
+        List<URL> classpaths = new ArrayList<URL>();
+        if (line.hasOption(CLASSPATH_OPTION.getOpt())) {
+            for (String path : line.getOptionValues(CLASSPATH_OPTION.getOpt())) {
+                try {
+                    classpaths.add(new URL(path));
+                } catch (MalformedURLException e) {
+                    throw new CliArgsException("Bad syntax for classpath: " + path);
+                }
+            }
+        }
+        this.classpaths = classpaths;
 
-		detachedMode = line.hasOption(DETACHED_OPTION.getOpt()) || line.hasOption(YARN_DETACHED_OPTION.getOpt());
-		shutdownOnAttachedExit = line.hasOption(SHUTDOWN_IF_ATTACHED_OPTION.getOpt());
+        if (line.hasOption(PARALLELISM_OPTION.getOpt())) {
+            hasParallelismOpt = true;
+            String parString = line.getOptionValue(PARALLELISM_OPTION.getOpt());
+            try {
+                parallelism = Integer.parseInt(parString);
+                if (parallelism <= 0 && parallelism != ExecutionConfig.PARALLELISM_DEFAULT) {
+                    throw new NumberFormatException();
+                }
+            } catch (NumberFormatException e) {
+                throw new CliArgsException(
+                        "The parallelism must be a positive number: " + parString);
+            }
+        } else {
+            hasParallelismOpt = false;
+            parallelism = ExecutionConfig.PARALLELISM_DEFAULT;
+        }
 
-		this.savepointSettings = CliFrontendParser.createSavepointRestoreSettings(line);
-	}
+        detachedMode =
+                line.hasOption(DETACHED_OPTION.getOpt())
+                        || line.hasOption(YARN_DETACHED_OPTION.getOpt());
+        shutdownOnAttachedExit = line.hasOption(SHUTDOWN_IF_ATTACHED_OPTION.getOpt());
 
-	protected String[] extractProgramArgs(CommandLine line) {
-		String[] args = line.hasOption(ARGS_OPTION.getOpt()) ?
-			line.getOptionValues(ARGS_OPTION.getOpt()) :
-			line.getArgs();
+        this.savepointSettings = CliFrontendParser.createSavepointRestoreSettings(line);
+    }
 
-		if (args.length > 0 && !line.hasOption(JAR_OPTION.getOpt())) {
-			jarFilePath = args[0];
-			args = Arrays.copyOfRange(args, 1, args.length);
-		}
+    protected String[] extractProgramArgs(CommandLine line) {
+        String[] args =
+                line.hasOption(ARGS_OPTION.getOpt())
+                        ? line.getOptionValues(ARGS_OPTION.getOpt())
+                        : line.getArgs();
 
-		return args;
-	}
+        if (args.length > 0 && !line.hasOption(JAR_OPTION.getOpt())) {
+            jarFilePath = args[0];
+            args = Arrays.copyOfRange(args, 1, args.length);
+        }
 
-	public void validate() throws CliArgsException {
-		// Java program should be specified a JAR file
-		if (getJarFilePath() == null) {
-			throw new CliArgsException("Java program should be specified a JAR file.");
-		}
-	}
+        return args;
+    }
 
-	public String getJarFilePath() {
-		return jarFilePath;
-	}
+    public void validate() throws CliArgsException {
+        // Java program should be specified a JAR file
+        if (getJarFilePath() == null) {
+            throw new CliArgsException("Java program should be specified a JAR file.");
+        }
+    }
 
-	public String getEntryPointClassName() {
-		return entryPointClass;
-	}
+    public String getJarFilePath() {
+        return jarFilePath;
+    }
 
-	public List<URL> getClasspaths() {
-		return classpaths;
-	}
+    public String getEntryPointClassName() {
+        return entryPointClass;
+    }
 
-	public String[] getProgramArgs() {
-		return programArgs;
-	}
+    public List<URL> getClasspaths() {
+        return classpaths;
+    }
 
-	public int getParallelism() {
-		return parallelism;
-	}
+    public String[] getProgramArgs() {
+        return programArgs;
+    }
 
-	public boolean getDetachedMode() {
-		return detachedMode;
-	}
+    public int getParallelism() {
+        return parallelism;
+    }
 
-	public boolean isShutdownOnAttachedExit() {
-		return shutdownOnAttachedExit;
-	}
+    public boolean getDetachedMode() {
+        return detachedMode;
+    }
 
-	public SavepointRestoreSettings getSavepointRestoreSettings() {
-		return savepointSettings;
-	}
+    public boolean isShutdownOnAttachedExit() {
+        return shutdownOnAttachedExit;
+    }
 
-	public void applyToConfiguration(Configuration configuration) {
-		if (getParallelism() != ExecutionConfig.PARALLELISM_DEFAULT) {
-			configuration.setInteger(CoreOptions.DEFAULT_PARALLELISM, getParallelism());
-		}
+    public SavepointRestoreSettings getSavepointRestoreSettings() {
+        return savepointSettings;
+    }
 
-		configuration.setBoolean(DeploymentOptions.ATTACHED, !getDetachedMode());
-		configuration.setBoolean(DeploymentOptions.SHUTDOWN_IF_ATTACHED, isShutdownOnAttachedExit());
-		ConfigUtils.encodeCollectionToConfig(configuration, PipelineOptions.CLASSPATHS, getClasspaths(), URL::toString);
-		SavepointRestoreSettings.toConfiguration(getSavepointRestoreSettings(), configuration);
-	}
+    public void applyToConfiguration(Configuration configuration) {
+        if (hasParallelismOpt) {
+            configuration.setInteger(CoreOptions.DEFAULT_PARALLELISM, getParallelism());
+        }
 
-	public static ProgramOptions create(CommandLine line) throws CliArgsException {
-		if (isPythonEntryPoint(line) || containsPythonDependencyOptions(line)) {
-			return createPythonProgramOptions(line);
-		} else {
-			return new ProgramOptions(line);
-		}
-	}
+        configuration.setBoolean(DeploymentOptions.ATTACHED, !getDetachedMode());
+        configuration.setBoolean(
+                DeploymentOptions.SHUTDOWN_IF_ATTACHED, isShutdownOnAttachedExit());
+        ConfigUtils.encodeCollectionToConfig(
+                configuration, PipelineOptions.CLASSPATHS, getClasspaths(), URL::toString);
+        SavepointRestoreSettings.toConfiguration(getSavepointRestoreSettings(), configuration);
+    }
+
+    public static ProgramOptions create(CommandLine line) throws CliArgsException {
+        if (isPythonEntryPoint(line) || containsPythonDependencyOptions(line)) {
+            return createPythonProgramOptions(line);
+        } else {
+            return new ProgramOptions(line);
+        }
+    }
 }

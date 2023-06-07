@@ -22,133 +22,63 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.UUID;
-import java.util.concurrent.TimeoutException;
 
 /**
  * {@link LeaderContender} implementation which provides some convenience functions for testing
  * purposes.
  */
-public class TestingContender implements LeaderContender {
-	private static final Logger LOG = LoggerFactory.getLogger(TestingContender.class);
+public class TestingContender extends TestingLeaderBase implements LeaderContender {
+    private static final Logger LOG = LoggerFactory.getLogger(TestingContender.class);
 
-	private final String address;
-	private final LeaderElectionService leaderElectionService;
-	private UUID leaderSessionID = null;
-	private boolean leader = false;
-	private Throwable error = null;
+    private final String address;
+    private final LeaderElectionService leaderElectionService;
+    private LeaderElection leaderElection;
 
-	private Object lock = new Object();
-	private Object errorLock = new Object();
+    private UUID leaderSessionID = null;
 
-	public TestingContender(
-			final String address,
-			final LeaderElectionService leaderElectionService) {
-		this.address = address;
-		this.leaderElectionService = leaderElectionService;
-	}
+    public TestingContender(
+            final String address, final LeaderElectionService leaderElectionService) {
+        this.address = address;
+        this.leaderElectionService = leaderElectionService;
+    }
 
-	/**
-	 * Waits until the contender becomes the leader or until the timeout has been exceeded.
-	 *
-	 * @param timeout
-	 * @throws TimeoutException
-	 */
-	public void waitForLeader(long timeout) throws TimeoutException {
-		long start = System.currentTimeMillis();
-		long curTimeout;
+    public LeaderElection startLeaderElection() throws Exception {
+        leaderElection = leaderElectionService.createLeaderElection();
+        leaderElection.startLeaderElection(this);
 
-		while (!isLeader() && (curTimeout = timeout - System.currentTimeMillis() + start) > 0) {
-			synchronized (lock) {
-				try {
-					lock.wait(curTimeout);
-				} catch (InterruptedException e) {
-					// we got interrupted so check again for the condition
-				}
-			}
-		}
+        return leaderElection;
+    }
 
-		if (!isLeader()) {
-			throw new TimeoutException("Contender was not elected as the leader within " +
-					timeout + "ms");
-		}
-	}
+    @Override
+    public void grantLeadership(UUID leaderSessionID) {
+        LOG.debug("Was granted leadership with session ID {}.", leaderSessionID);
 
-	/**
-	 * Waits until an error has been found or until the timeout has been exceeded.
-	 *
-	 * @param timeout
-	 * @throws TimeoutException
-	 */
-	public void waitForError(long timeout) throws TimeoutException {
-		long start = System.currentTimeMillis();
-		long curTimeout;
+        this.leaderSessionID = leaderSessionID;
 
-		while (error == null && (curTimeout = timeout - System.currentTimeMillis() + start) > 0) {
-			synchronized (errorLock) {
-				try {
-					errorLock.wait(curTimeout);
-				} catch (InterruptedException e) {
-					// we got interrupted so check again for the condition
-				}
-			}
-		}
+        leaderElection.confirmLeadership(leaderSessionID, address);
 
-		if (error == null) {
-			throw new TimeoutException("Contender did not see an exception in " +
-					timeout + "ms");
-		}
-	}
+        leaderEventQueue.offer(LeaderInformation.known(leaderSessionID, address));
+    }
 
-	public UUID getLeaderSessionID() {
-		return leaderSessionID;
-	}
+    @Override
+    public void revokeLeadership() {
+        LOG.debug("Was revoked leadership. Old session ID {}.", leaderSessionID);
 
-	public Throwable getError() {
-		return error;
-	}
+        leaderSessionID = null;
+        leaderEventQueue.offer(LeaderInformation.empty());
+    }
 
-	public boolean isLeader() {
-		return leader;
-	}
+    @Override
+    public String getDescription() {
+        return address;
+    }
 
-	@Override
-	public void grantLeadership(UUID leaderSessionID) {
-		synchronized (lock) {
-			LOG.debug("Was granted leadership with session ID {}.", leaderSessionID);
+    @Override
+    public void handleError(Exception exception) {
+        super.handleError(exception);
+    }
 
-			this.leaderSessionID = leaderSessionID;
-
-			leaderElectionService.confirmLeadership(leaderSessionID, address);
-
-			leader = true;
-
-			lock.notifyAll();
-		}
-	}
-
-	@Override
-	public void revokeLeadership() {
-		synchronized (lock) {
-			LOG.debug("Was revoked leadership. Old session ID {}.", leaderSessionID);
-
-			leader = false;
-			leaderSessionID = null;
-
-			lock.notifyAll();
-		}
-	}
-
-	@Override
-	public String getDescription() {
-		return address;
-	}
-
-	@Override
-	public void handleError(Exception exception) {
-		synchronized (errorLock) {
-			this.error = exception;
-
-			errorLock.notifyAll();
-		}
-	}
+    public UUID getLeaderSessionID() {
+        return leaderSessionID;
+    }
 }

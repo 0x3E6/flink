@@ -21,7 +21,6 @@ package org.apache.flink.kubernetes.kubeclient;
 import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.ResourceManagerOptions;
 import org.apache.flink.configuration.TaskManagerOptions;
-import org.apache.flink.kubernetes.KubernetesTestBase;
 import org.apache.flink.kubernetes.configuration.KubernetesConfigOptions;
 import org.apache.flink.kubernetes.kubeclient.parameters.KubernetesTaskManagerParameters;
 import org.apache.flink.runtime.clusterframework.ContaineredTaskManagerParameters;
@@ -29,73 +28,76 @@ import org.apache.flink.runtime.clusterframework.TaskExecutorProcessSpec;
 import org.apache.flink.runtime.clusterframework.TaskExecutorProcessUtils;
 import org.apache.flink.runtime.externalresource.ExternalResourceUtils;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 
-/**
- * Base test class for the TaskManager side.
- */
-public class KubernetesTaskManagerTestBase extends KubernetesTestBase {
+/** Base test class for the TaskManager side. */
+public class KubernetesTaskManagerTestBase extends KubernetesPodTestBase {
 
-	protected static final int RPC_PORT = 12345;
+    protected static final int RPC_PORT = 12345;
 
-	protected static final String POD_NAME = "taskmanager-pod-1";
-	private static final String DYNAMIC_PROPERTIES = "";
+    protected static final String POD_NAME = "taskmanager-pod-1";
+    protected static final String DYNAMIC_PROPERTIES = "";
+    protected static final String JVM_MEM_OPTS_ENV = "-Xmx512m";
 
-	protected static final int TOTAL_PROCESS_MEMORY = 1184;
-	protected static final double TASK_MANAGER_CPU = 2.0;
+    protected static final int TOTAL_PROCESS_MEMORY = 1184;
+    protected static final double TASK_MANAGER_CPU = 2.0;
+    protected static final double TASK_MANAGER_CPU_LIMIT_FACTOR = 1.5;
+    protected static final double TASK_MANAGER_MEMORY_LIMIT_FACTOR = 2.0;
+    protected static final String ENTRYPOINT_ARGS = "entrypoint args";
 
-	protected final Map<String, String> customizedEnvs = new HashMap<String, String>() {
-		{
-			put("key1", "value1");
-			put("key2", "value2");
-		}
-	};
+    protected TaskExecutorProcessSpec taskExecutorProcessSpec;
 
-	protected final Map<String, String> userLabels = new HashMap<String, String>() {
-		{
-			put("label1", "value1");
-			put("label2", "value2");
-		}
-	};
+    protected ContaineredTaskManagerParameters containeredTaskManagerParameters;
 
-	protected final Map<String, String> nodeSelector = new HashMap<String, String>() {
-		{
-			put("env", "production");
-			put("disk", "ssd");
-		}
-	};
+    protected KubernetesTaskManagerParameters kubernetesTaskManagerParameters;
 
-	protected TaskExecutorProcessSpec taskExecutorProcessSpec;
+    protected static final Set<String> BLOCKED_NODES =
+            new HashSet<>(Arrays.asList("blockedNode1", "blockedNode2"));
 
-	protected ContaineredTaskManagerParameters containeredTaskManagerParameters;
+    @Override
+    protected void setupFlinkConfig() {
+        super.setupFlinkConfig();
 
-	protected KubernetesTaskManagerParameters kubernetesTaskManagerParameters;
+        flinkConfig.set(TaskManagerOptions.RPC_PORT, String.valueOf(RPC_PORT));
+        flinkConfig.set(TaskManagerOptions.CPU_CORES, TASK_MANAGER_CPU);
+        flinkConfig.set(
+                TaskManagerOptions.TOTAL_PROCESS_MEMORY,
+                MemorySize.parse(TOTAL_PROCESS_MEMORY + "m"));
+        customizedEnvs.forEach(
+                (k, v) ->
+                        flinkConfig.setString(
+                                ResourceManagerOptions.CONTAINERIZED_TASK_MANAGER_ENV_PREFIX + k,
+                                v));
+        flinkConfig.set(KubernetesConfigOptions.TASK_MANAGER_LABELS, userLabels);
+        flinkConfig.set(KubernetesConfigOptions.TASK_MANAGER_NODE_SELECTOR, nodeSelector);
+        flinkConfig.set(
+                KubernetesConfigOptions.TASK_MANAGER_CPU_LIMIT_FACTOR,
+                TASK_MANAGER_CPU_LIMIT_FACTOR);
+        flinkConfig.set(
+                KubernetesConfigOptions.TASK_MANAGER_MEMORY_LIMIT_FACTOR,
+                TASK_MANAGER_MEMORY_LIMIT_FACTOR);
+        this.flinkConfig.set(
+                KubernetesConfigOptions.KUBERNETES_TASKMANAGER_ENTRYPOINT_ARGS, ENTRYPOINT_ARGS);
+    }
 
-	protected FlinkPod baseFlinkPod = new FlinkPod.Builder().build();
-
-	@Override
-	protected void setupFlinkConfig() {
-		super.setupFlinkConfig();
-
-		flinkConfig.set(TaskManagerOptions.RPC_PORT, String.valueOf(RPC_PORT));
-		flinkConfig.set(TaskManagerOptions.CPU_CORES, TASK_MANAGER_CPU);
-		flinkConfig.set(TaskManagerOptions.TOTAL_PROCESS_MEMORY, MemorySize.parse(TOTAL_PROCESS_MEMORY + "m"));
-		customizedEnvs.forEach((k, v) ->
-			flinkConfig.setString(ResourceManagerOptions.CONTAINERIZED_TASK_MANAGER_ENV_PREFIX + k, v));
-		this.flinkConfig.set(KubernetesConfigOptions.TASK_MANAGER_LABELS, userLabels);
-		this.flinkConfig.set(KubernetesConfigOptions.TASK_MANAGER_NODE_SELECTOR, nodeSelector);
-	}
-
-	@Override
-	protected void onSetup() throws Exception {
-		taskExecutorProcessSpec = TaskExecutorProcessUtils.processSpecFromConfig(flinkConfig);
-		containeredTaskManagerParameters = ContaineredTaskManagerParameters.create(flinkConfig, taskExecutorProcessSpec);
-		kubernetesTaskManagerParameters = new KubernetesTaskManagerParameters(
-				flinkConfig,
-				POD_NAME,
-				DYNAMIC_PROPERTIES,
-				containeredTaskManagerParameters,
-				ExternalResourceUtils.getExternalResources(flinkConfig, KubernetesConfigOptions.EXTERNAL_RESOURCE_KUBERNETES_CONFIG_KEY_SUFFIX));
-	}
+    @Override
+    protected void onSetup() throws Exception {
+        taskExecutorProcessSpec = TaskExecutorProcessUtils.processSpecFromConfig(flinkConfig);
+        containeredTaskManagerParameters =
+                ContaineredTaskManagerParameters.create(flinkConfig, taskExecutorProcessSpec);
+        kubernetesTaskManagerParameters =
+                new KubernetesTaskManagerParameters(
+                        flinkConfig,
+                        POD_NAME,
+                        DYNAMIC_PROPERTIES,
+                        JVM_MEM_OPTS_ENV,
+                        containeredTaskManagerParameters,
+                        ExternalResourceUtils.getExternalResourceConfigurationKeys(
+                                flinkConfig,
+                                KubernetesConfigOptions
+                                        .EXTERNAL_RESOURCE_KUBERNETES_CONFIG_KEY_SUFFIX),
+                        BLOCKED_NODES);
+    }
 }

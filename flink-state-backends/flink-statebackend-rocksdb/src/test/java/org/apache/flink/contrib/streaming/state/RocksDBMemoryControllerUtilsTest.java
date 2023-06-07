@@ -22,79 +22,111 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
-import org.junit.runner.RunWith;
-import org.mockito.stubbing.Answer;
-import org.powermock.api.mockito.PowerMockito;
-import org.powermock.core.classloader.annotations.PrepareForTest;
-import org.powermock.modules.junit4.PowerMockRunner;
 import org.rocksdb.Cache;
-import org.rocksdb.LRUCache;
 import org.rocksdb.NativeLibraryLoader;
 import org.rocksdb.WriteBufferManager;
 
 import java.io.IOException;
-import java.util.concurrent.atomic.AtomicLong;
 
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyDouble;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.powermock.api.mockito.PowerMockito.when;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
-/**
- * Tests to guard {@link RocksDBMemoryControllerUtils}.
- */
-@RunWith(PowerMockRunner.class)
-@PrepareForTest(RocksDBMemoryControllerUtils.class)
+/** Tests to guard {@link RocksDBMemoryControllerUtils}. */
 public class RocksDBMemoryControllerUtilsTest {
 
-	@Rule
-	public final TemporaryFolder temporaryFolder = new TemporaryFolder();
+    @Rule public final TemporaryFolder temporaryFolder = new TemporaryFolder();
 
-	@Before
-	public void ensureRocksDbNativeLibraryLoaded() throws IOException {
-		NativeLibraryLoader.getInstance().loadLibrary(temporaryFolder.newFolder().getAbsolutePath());
-	}
+    @Before
+    public void ensureRocksDbNativeLibraryLoaded() throws IOException {
+        NativeLibraryLoader.getInstance()
+                .loadLibrary(temporaryFolder.newFolder().getAbsolutePath());
+    }
 
-	@Test
-	public void testCreateSharedResourcesWithExpectedCapacity() {
-		PowerMockito.mockStatic(RocksDBMemoryControllerUtils.class);
-		final AtomicLong actualCacheCapacity = new AtomicLong(0L);
-		final AtomicLong actualWbmCapacity = new AtomicLong(0L);
+    @Test
+    public void testCreateSharedResourcesWithExpectedCapacity() {
+        long totalMemorySize = 2048L;
+        double writeBufferRatio = 0.5;
+        double highPriPoolRatio = 0.1;
+        TestingRocksDBMemoryFactory factory = new TestingRocksDBMemoryFactory();
+        RocksDBSharedResources rocksDBSharedResources =
+                RocksDBMemoryControllerUtils.allocateRocksDBSharedResources(
+                        totalMemorySize, writeBufferRatio, highPriPoolRatio, false, factory);
+        long expectedCacheCapacity =
+                RocksDBMemoryControllerUtils.calculateActualCacheCapacity(
+                        totalMemorySize, writeBufferRatio);
+        long expectedWbmCapacity =
+                RocksDBMemoryControllerUtils.calculateWriteBufferManagerCapacity(
+                        totalMemorySize, writeBufferRatio);
 
-		when(RocksDBMemoryControllerUtils.allocateRocksDBSharedResources(anyLong(), anyDouble(), anyDouble()))
-			.thenCallRealMethod();
+        assertThat(factory.actualCacheCapacity, is(expectedCacheCapacity));
+        assertThat(factory.actualWbmCapacity, is(expectedWbmCapacity));
+        assertThat(rocksDBSharedResources.getWriteBufferManagerCapacity(), is(expectedWbmCapacity));
+    }
 
-		when(RocksDBMemoryControllerUtils.calculateActualCacheCapacity(anyLong(), anyDouble()))
-			.thenCallRealMethod();
+    @Test
+    public void testCalculateRocksDBDefaultArenaBlockSize() {
+        final long align = 4 * 1024;
+        final long writeBufferSize = 64 * 1024 * 1024;
+        final long expectArenaBlockSize = writeBufferSize / 8;
 
-		when(RocksDBMemoryControllerUtils.calculateWriteBufferManagerCapacity(anyLong(), anyDouble()))
-			.thenCallRealMethod();
+        // Normal case test
+        assertThat(
+                "Arena block size calculation error for normal case",
+                RocksDBMemoryControllerUtils.calculateRocksDBDefaultArenaBlockSize(writeBufferSize),
+                is(expectArenaBlockSize));
 
-		// because PowerMockito cannot mock on native static method easily,
-		// we introduce `createCache` and `createWriteBufferManager` wrappers here.
-		when(RocksDBMemoryControllerUtils.createCache(anyLong(), anyDouble()))
-			.thenAnswer((Answer<LRUCache>) invocation -> {
-				Object[] arguments = invocation.getArguments();
-				actualCacheCapacity.set((long) arguments[0]);
-				return (LRUCache) invocation.callRealMethod();
-			});
+        // Alignment tests
+        assertThat(
+                "Arena block size calculation error for alignment case",
+                RocksDBMemoryControllerUtils.calculateRocksDBDefaultArenaBlockSize(
+                        writeBufferSize - 1),
+                is(expectArenaBlockSize));
+        assertThat(
+                "Arena block size calculation error for alignment case2",
+                RocksDBMemoryControllerUtils.calculateRocksDBDefaultArenaBlockSize(
+                        writeBufferSize + 8),
+                is(expectArenaBlockSize + align));
+    }
 
-		when(RocksDBMemoryControllerUtils.createWriteBufferManager(anyLong(), any(Cache.class)))
-			.thenAnswer((Answer<WriteBufferManager>) invocation -> {
-				Object[] arguments = invocation.getArguments();
-				actualWbmCapacity.set((long) arguments[0]);
-				return (WriteBufferManager) invocation.callRealMethod();
-			});
+    @Test
+    public void testCalculateRocksDBMutableLimit() {
+        long bufferSize = 64 * 1024 * 1024;
+        long limit = bufferSize * 7 / 8;
+        assertThat(
+                RocksDBMemoryControllerUtils.calculateRocksDBMutableLimit(bufferSize), is(limit));
+    }
 
-		long totalMemorySize = 2048L;
-		double writeBufferRatio = 0.5;
-		double highPriPoolRatio = 0.1;
-		RocksDBMemoryControllerUtils.allocateRocksDBSharedResources(totalMemorySize, writeBufferRatio, highPriPoolRatio);
-		long expectedCacheCapacity = RocksDBMemoryControllerUtils.calculateActualCacheCapacity(totalMemorySize, writeBufferRatio);
-		long expectedWbmCapacity = RocksDBMemoryControllerUtils.calculateWriteBufferManagerCapacity(totalMemorySize, writeBufferRatio);
-		assertThat(actualCacheCapacity.get(), is(expectedCacheCapacity));
-		assertThat(actualWbmCapacity.get(), is(expectedWbmCapacity));
-	}
+    @Test
+    public void testValidateArenaBlockSize() {
+        long arenaBlockSize = 8 * 1024 * 1024;
+        assertFalse(
+                RocksDBMemoryControllerUtils.validateArenaBlockSize(
+                        arenaBlockSize, (long) (arenaBlockSize * 0.5)));
+        assertTrue(
+                RocksDBMemoryControllerUtils.validateArenaBlockSize(
+                        arenaBlockSize, (long) (arenaBlockSize * 1.5)));
+    }
+
+    private static final class TestingRocksDBMemoryFactory
+            implements RocksDBMemoryControllerUtils.RocksDBMemoryFactory {
+        private Long actualCacheCapacity = null;
+        private Long actualWbmCapacity = null;
+
+        @Override
+        public Cache createCache(long cacheCapacity, double highPriorityPoolRatio) {
+            actualCacheCapacity = cacheCapacity;
+            return RocksDBMemoryControllerUtils.RocksDBMemoryFactory.DEFAULT.createCache(
+                    cacheCapacity, highPriorityPoolRatio);
+        }
+
+        @Override
+        public WriteBufferManager createWriteBufferManager(
+                long writeBufferManagerCapacity, Cache cache) {
+            actualWbmCapacity = writeBufferManagerCapacity;
+            return RocksDBMemoryControllerUtils.RocksDBMemoryFactory.DEFAULT
+                    .createWriteBufferManager(writeBufferManagerCapacity, cache);
+        }
+    }
 }

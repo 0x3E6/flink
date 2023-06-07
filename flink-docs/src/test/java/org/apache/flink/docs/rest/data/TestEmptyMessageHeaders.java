@@ -23,72 +23,90 @@ import org.apache.flink.runtime.rest.messages.EmptyMessageParameters;
 import org.apache.flink.runtime.rest.messages.EmptyRequestBody;
 import org.apache.flink.runtime.rest.messages.EmptyResponseBody;
 import org.apache.flink.runtime.rest.messages.MessageHeaders;
-import org.apache.flink.runtime.rest.versioning.RestAPIVersion;
+import org.apache.flink.runtime.rest.messages.RuntimeMessageHeaders;
+import org.apache.flink.runtime.rest.versioning.RuntimeRestAPIVersion;
 
 import org.apache.flink.shaded.netty4.io.netty.handler.codec.http.HttpResponseStatus;
 
 import java.util.Collection;
 import java.util.Collections;
+import java.util.UUID;
 
 /**
- * A {@link MessageHeaders} for testing purpose.
- * Its request body, response body and message parameters are all empty.
+ * A {@link MessageHeaders} for testing purpose. Its request body, response body and message
+ * parameters are all empty.
  */
-public class TestEmptyMessageHeaders implements MessageHeaders<EmptyRequestBody, EmptyResponseBody, EmptyMessageParameters> {
+public class TestEmptyMessageHeaders
+        implements RuntimeMessageHeaders<
+                EmptyRequestBody, EmptyResponseBody, EmptyMessageParameters> {
 
-	private static final String URL = "/test/empty";
-	private static final String DESCRIPTION = "This is an empty testing REST API.";
+    private static final String URL = "/test/empty";
+    private static final String DESCRIPTION = "This is an empty testing REST API.";
 
-	private final String url;
-	private final String description;
+    private final String url;
+    private final String description;
+    private final String operationId;
 
-	public TestEmptyMessageHeaders() {
-		this.url = URL;
-		this.description = DESCRIPTION;
-	}
+    public TestEmptyMessageHeaders() {
+        this(URL, DESCRIPTION, UUID.randomUUID().toString());
+    }
 
-	public TestEmptyMessageHeaders(String url, String description) {
-		this.url = url;
-		this.description = description;
-	}
+    public TestEmptyMessageHeaders(String url, String description) {
+        this(url, description, UUID.randomUUID().toString());
+    }
 
-	@Override
-	public Class<EmptyRequestBody> getRequestClass() {
-		return EmptyRequestBody.class;
-	}
+    public TestEmptyMessageHeaders(String operationId) {
+        this(URL, DESCRIPTION, operationId);
+    }
 
-	@Override
-	public Class<EmptyResponseBody> getResponseClass() {
-		return EmptyResponseBody.class;
-	}
+    private TestEmptyMessageHeaders(String url, String description, String operationId) {
+        this.url = url;
+        this.description = description;
+        this.operationId = operationId;
+    }
 
-	@Override
-	public HttpMethodWrapper getHttpMethod() {
-		return HttpMethodWrapper.GET;
-	}
+    @Override
+    public Class<EmptyRequestBody> getRequestClass() {
+        return EmptyRequestBody.class;
+    }
 
-	@Override
-	public HttpResponseStatus getResponseStatusCode() {
-		return HttpResponseStatus.OK;
-	}
+    @Override
+    public Class<EmptyResponseBody> getResponseClass() {
+        return EmptyResponseBody.class;
+    }
 
-	@Override
-	public String getDescription() {
-		return description;
-	}
+    @Override
+    public HttpMethodWrapper getHttpMethod() {
+        return HttpMethodWrapper.GET;
+    }
 
-	@Override
-	public EmptyMessageParameters getUnresolvedMessageParameters() {
-		return EmptyMessageParameters.getInstance();
-	}
+    @Override
+    public HttpResponseStatus getResponseStatusCode() {
+        return HttpResponseStatus.OK;
+    }
 
-	@Override
-	public String getTargetRestEndpointURL() {
-		return url;
-	}
+    @Override
+    public String operationId() {
+        return operationId;
+    }
 
-	@Override
-	public Collection<RestAPIVersion> getSupportedAPIVersions() {
-		return Collections.singleton(RestAPIVersion.V0);
-	}
+    @Override
+    public String getDescription() {
+        return description;
+    }
+
+    @Override
+    public EmptyMessageParameters getUnresolvedMessageParameters() {
+        return EmptyMessageParameters.getInstance();
+    }
+
+    @Override
+    public String getTargetRestEndpointURL() {
+        return url;
+    }
+
+    @Override
+    public Collection<RuntimeRestAPIVersion> getSupportedAPIVersions() {
+        return Collections.singleton(RuntimeRestAPIVersion.V0);
+    }
 }

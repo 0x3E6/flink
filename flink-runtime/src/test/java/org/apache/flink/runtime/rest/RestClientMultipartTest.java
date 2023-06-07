@@ -20,101 +20,115 @@ package org.apache.flink.runtime.rest;
 
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.testutils.AllCallbackWrapper;
 import org.apache.flink.runtime.rest.messages.EmptyMessageParameters;
 import org.apache.flink.runtime.rest.messages.EmptyRequestBody;
 import org.apache.flink.runtime.rest.messages.EmptyResponseBody;
-import org.apache.flink.runtime.testingUtils.TestingUtils;
 import org.apache.flink.util.ConfigurationException;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.concurrent.Executors;
 
-import org.junit.After;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.ClassRule;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Path;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
-/**
- * Tests for the multipart functionality of the {@link RestClient}.
- */
-public class RestClientMultipartTest extends TestLogger {
+import static org.assertj.core.api.Assertions.assertThat;
 
-	@ClassRule
-	public static final MultipartUploadResource MULTIPART_UPLOAD_RESOURCE = new MultipartUploadResource();
+/** Tests for the multipart functionality of the {@link RestClient}. */
+class RestClientMultipartTest {
 
-	private static RestClient restClient;
+    @TempDir public static Path tempDir;
 
-	@BeforeClass
-	public static void setupClient() throws ConfigurationException {
-		restClient = new RestClient(RestClientConfiguration.fromConfiguration(new Configuration()), TestingUtils.defaultExecutor());
-	}
+    @RegisterExtension
+    public static final AllCallbackWrapper<MultipartUploadExtension>
+            MULTIPART_UPLOAD_EXTENSION_WRAPPER =
+                    new AllCallbackWrapper<>(new MultipartUploadExtension(() -> tempDir));
 
-	@After
-	public void reset() {
-		MULTIPART_UPLOAD_RESOURCE.resetState();
-	}
+    private static RestClient restClient;
 
-	@AfterClass
-	public static void teardownClient() {
-		if (restClient != null) {
-			restClient.shutdown(Time.seconds(10));
-		}
-	}
+    public static MultipartUploadExtension multipartUploadExtension;
 
-	@Test
-	public void testMixedMultipart() throws Exception {
-		Collection<FileUpload> files = MULTIPART_UPLOAD_RESOURCE.getFilesToUpload().stream()
-			.map(file -> new FileUpload(file.toPath(), "application/octet-stream")).collect(Collectors.toList());
+    @BeforeAll
+    static void setupClient() throws ConfigurationException {
+        multipartUploadExtension = MULTIPART_UPLOAD_EXTENSION_WRAPPER.getCustomExtension();
+        restClient = new RestClient(new Configuration(), Executors.directExecutor());
+    }
 
-		MultipartUploadResource.TestRequestBody json = new MultipartUploadResource.TestRequestBody();
-		CompletableFuture<EmptyResponseBody> responseFuture = restClient.sendRequest(
-			MULTIPART_UPLOAD_RESOURCE.getServerSocketAddress().getHostName(),
-			MULTIPART_UPLOAD_RESOURCE.getServerSocketAddress().getPort(),
-			MULTIPART_UPLOAD_RESOURCE.getMixedHandler().getMessageHeaders(),
-			EmptyMessageParameters.getInstance(),
-			json,
-			files
-		);
+    @AfterEach
+    void reset() {
+        MULTIPART_UPLOAD_EXTENSION_WRAPPER.getCustomExtension().resetState();
+    }
 
-		responseFuture.get();
-		Assert.assertEquals(json, MULTIPART_UPLOAD_RESOURCE.getMixedHandler().lastReceivedRequest);
-	}
+    @AfterAll
+    static void teardownClient() {
+        if (restClient != null) {
+            restClient.shutdown(Time.seconds(10));
+        }
+    }
 
-	@Test
-	public void testJsonMultipart() throws Exception {
-		MultipartUploadResource.TestRequestBody json = new MultipartUploadResource.TestRequestBody();
-		CompletableFuture<EmptyResponseBody> responseFuture = restClient.sendRequest(
-			MULTIPART_UPLOAD_RESOURCE.getServerSocketAddress().getHostName(),
-			MULTIPART_UPLOAD_RESOURCE.getServerSocketAddress().getPort(),
-			MULTIPART_UPLOAD_RESOURCE.getJsonHandler().getMessageHeaders(),
-			EmptyMessageParameters.getInstance(),
-			json,
-			Collections.emptyList()
-		);
+    @Test
+    void testMixedMultipart() throws Exception {
+        Collection<FileUpload> files =
+                multipartUploadExtension.getFilesToUpload().stream()
+                        .map(file -> new FileUpload(file.toPath(), "application/octet-stream"))
+                        .collect(Collectors.toList());
 
-		responseFuture.get();
-		Assert.assertEquals(json, MULTIPART_UPLOAD_RESOURCE.getJsonHandler().lastReceivedRequest);
-	}
+        MultipartUploadExtension.TestRequestBody json =
+                new MultipartUploadExtension.TestRequestBody();
+        CompletableFuture<EmptyResponseBody> responseFuture =
+                restClient.sendRequest(
+                        multipartUploadExtension.getServerSocketAddress().getHostName(),
+                        multipartUploadExtension.getServerSocketAddress().getPort(),
+                        multipartUploadExtension.getMixedHandler().getMessageHeaders(),
+                        EmptyMessageParameters.getInstance(),
+                        json,
+                        files);
 
-	@Test
-	public void testFileMultipart() throws Exception {
-		Collection<FileUpload> files = MULTIPART_UPLOAD_RESOURCE.getFilesToUpload().stream()
-			.map(file -> new FileUpload(file.toPath(), "application/octet-stream")).collect(Collectors.toList());
+        responseFuture.get();
+        assertThat(json).isEqualTo(multipartUploadExtension.getMixedHandler().lastReceivedRequest);
+    }
 
-		CompletableFuture<EmptyResponseBody> responseFuture = restClient.sendRequest(
-			MULTIPART_UPLOAD_RESOURCE.getServerSocketAddress().getHostName(),
-			MULTIPART_UPLOAD_RESOURCE.getServerSocketAddress().getPort(),
-			MULTIPART_UPLOAD_RESOURCE.getFileHandler().getMessageHeaders(),
-			EmptyMessageParameters.getInstance(),
-			EmptyRequestBody.getInstance(),
-			files
-		);
+    @Test
+    void testJsonMultipart() throws Exception {
+        MultipartUploadExtension.TestRequestBody json =
+                new MultipartUploadExtension.TestRequestBody();
+        CompletableFuture<EmptyResponseBody> responseFuture =
+                restClient.sendRequest(
+                        multipartUploadExtension.getServerSocketAddress().getHostName(),
+                        multipartUploadExtension.getServerSocketAddress().getPort(),
+                        multipartUploadExtension.getJsonHandler().getMessageHeaders(),
+                        EmptyMessageParameters.getInstance(),
+                        json,
+                        Collections.emptyList());
 
-		responseFuture.get();
-	}
+        responseFuture.get();
+        assertThat(json).isEqualTo(multipartUploadExtension.getJsonHandler().lastReceivedRequest);
+    }
+
+    @Test
+    void testFileMultipart() throws Exception {
+        Collection<FileUpload> files =
+                multipartUploadExtension.getFilesToUpload().stream()
+                        .map(file -> new FileUpload(file.toPath(), "application/octet-stream"))
+                        .collect(Collectors.toList());
+
+        CompletableFuture<EmptyResponseBody> responseFuture =
+                restClient.sendRequest(
+                        multipartUploadExtension.getServerSocketAddress().getHostName(),
+                        multipartUploadExtension.getServerSocketAddress().getPort(),
+                        multipartUploadExtension.getFileHandler().getMessageHeaders(),
+                        EmptyMessageParameters.getInstance(),
+                        EmptyRequestBody.getInstance(),
+                        files);
+
+        responseFuture.get();
+    }
 }

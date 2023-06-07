@@ -18,48 +18,73 @@
 
 package org.apache.flink.table.api;
 
+import org.apache.flink.annotation.Experimental;
 import org.apache.flink.annotation.PublicEvolving;
 
 /**
- * A {@link StatementSet} accepts DML statements or {@link Table}s,
- * the planner can optimize all added statements and Tables together
- * and then submit as one job.
+ * A {@link StatementSet} accepts pipelines defined by DML statements or {@link Table} objects. The
+ * planner can optimize all added statements together and then submit them as one job.
  *
- * <p>The added statements and Tables will be cleared
- * when calling the `execute` method.
+ * <p>The added statements will be cleared when calling the {@link #execute()} method.
  */
 @PublicEvolving
-public interface StatementSet {
+public interface StatementSet extends Explainable<StatementSet>, Compilable, Executable {
 
-	/**
-	 * add insert statement to the set.
-	 */
-	StatementSet addInsertSql(String statement);
+    /** Adds a {@link TablePipeline}. */
+    StatementSet add(TablePipeline tablePipeline);
 
-	/**
-	 * add Table with the given sink table name to the set.
-	 */
-	StatementSet addInsert(String targetPath, Table table);
+    /** Adds an {@code INSERT INTO} SQL statement. */
+    StatementSet addInsertSql(String statement);
 
-	/**
-	 * add {@link Table} with the given sink table name to the set.
-	 */
-	StatementSet addInsert(String targetPath, Table table, boolean overwrite);
+    /**
+     * Shorthand for {@code statementSet.add(table.insertInto(targetPath))}.
+     *
+     * @see #add(TablePipeline)
+     * @see Table#insertInto(String)
+     */
+    StatementSet addInsert(String targetPath, Table table);
 
-	/**
-	 * returns the AST and the execution plan to compute the result of the
-	 * all statements and Tables.
-	 *
-	 * @param extraDetails The extra explain details which the explain result should include,
-	 *                     e.g. estimated cost, changelog mode for streaming
-	 * @return AST and the execution plan.
-	 */
-	String explain(ExplainDetail... extraDetails);
+    /**
+     * Shorthand for {@code statementSet.add(table.insertInto(targetPath, overwrite))}.
+     *
+     * @see #add(TablePipeline)
+     * @see Table#insertInto(String, boolean)
+     */
+    StatementSet addInsert(String targetPath, Table table, boolean overwrite);
 
-	/**
-	 * execute all statements and Tables as a batch.
-	 *
-	 * <p>The added statements and Tables will be cleared when executing this method.
-	 */
-	TableResult execute();
+    /**
+     * Shorthand for {@code statementSet.add(table.insertInto(targetDescriptor))}.
+     *
+     * @see #add(TablePipeline)
+     * @see Table#insertInto(TableDescriptor)
+     */
+    StatementSet addInsert(TableDescriptor targetDescriptor, Table table);
+
+    /**
+     * Shorthand for {@code statementSet.add(table.insertInto(targetDescriptor, overwrite))}.
+     *
+     * @see #add(TablePipeline)
+     * @see Table#insertInto(TableDescriptor, boolean)
+     */
+    StatementSet addInsert(TableDescriptor targetDescriptor, Table table, boolean overwrite);
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>This method executes all statements as one job.
+     *
+     * <p>The added statements will be cleared after calling this method.
+     */
+    @Override
+    TableResult execute();
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>This method compiles all statements into a {@link CompiledPlan} that can be executed as
+     * one job.
+     */
+    @Override
+    @Experimental
+    CompiledPlan compilePlan() throws TableException;
 }

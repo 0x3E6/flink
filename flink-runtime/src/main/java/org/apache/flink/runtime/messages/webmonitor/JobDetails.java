@@ -18,254 +18,361 @@
 
 package org.apache.flink.runtime.messages.webmonitor;
 
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.runtime.execution.ExecutionState;
+import org.apache.flink.runtime.executiongraph.AccessExecution;
+import org.apache.flink.runtime.executiongraph.AccessExecutionGraph;
+import org.apache.flink.runtime.executiongraph.AccessExecutionJobVertex;
+import org.apache.flink.runtime.executiongraph.AccessExecutionVertex;
+import org.apache.flink.runtime.rest.messages.json.JobIDDeserializer;
+import org.apache.flink.runtime.rest.messages.json.JobIDSerializer;
 import org.apache.flink.util.Preconditions;
 
-import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.core.JsonGenerator;
-import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.core.JsonParser;
-import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.DeserializationContext;
-import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
-import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.SerializerProvider;
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonCreator;
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonIgnore;
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.annotation.JsonSerialize;
-import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.deser.std.StdDeserializer;
-import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ser.std.StdSerializer;
 
-import java.io.IOException;
 import java.io.Serializable;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
-/**
- * An actor message with a detailed overview of the current status of a job.
- */
-@JsonSerialize(using = JobDetails.JobDetailsSerializer.class)
-@JsonDeserialize(using = JobDetails.JobDetailsDeserializer.class)
+/** An actor message with a detailed overview of the current status of a job. */
 public class JobDetails implements Serializable {
 
-	private static final long serialVersionUID = -3391462110304948766L;
+    private static final long serialVersionUID = -3391462110304948766L;
 
-	private static final String FIELD_NAME_JOB_ID = "jid";
-	private static final String FIELD_NAME_JOB_NAME = "name";
-	private static final String FIELD_NAME_START_TIME = "start-time";
-	private static final String FIELD_NAME_END_TIME = "end-time";
-	private static final String FIELD_NAME_DURATION = "duration";
-	private static final String FIELD_NAME_STATUS = "state";
-	private static final String FIELD_NAME_LAST_MODIFICATION = "last-modification";
-	private static final String FIELD_NAME_TOTAL_NUMBER_TASKS = "total";
+    private static final String FIELD_NAME_JOB_ID = "jid";
+    private static final String FIELD_NAME_JOB_NAME = "name";
+    private static final String FIELD_NAME_START_TIME = "start-time";
+    private static final String FIELD_NAME_END_TIME = "end-time";
+    private static final String FIELD_NAME_DURATION = "duration";
+    private static final String FIELD_NAME_STATUS = "state";
+    private static final String FIELD_NAME_LAST_MODIFICATION = "last-modification";
+    private static final String FIELD_NAME_TOTAL_NUMBER_TASKS = "total";
+    private static final String FIELD_NAME_TASKS = "tasks";
 
-	private final JobID jobId;
+    private final JobID jobId;
 
-	private final String jobName;
+    private final String jobName;
 
-	private final long startTime;
+    private final long startTime;
 
-	private final long endTime;
+    private final long endTime;
 
-	private final long duration;
+    private final long duration;
 
-	private final JobStatus status;
+    private final JobStatus status;
 
-	private final long lastUpdateTime;
+    private final long lastUpdateTime;
 
-	private final int[] tasksPerState;
-	
-	private final int numTasks;
+    private final int[] tasksPerState;
 
-	public JobDetails(
-			JobID jobId,
-			String jobName,
-			long startTime,
-			long endTime,
-			long duration,
-			JobStatus status,
-			long lastUpdateTime,
-			int[] tasksPerState,
-			int numTasks) {
+    private final int numTasks;
 
-		this.jobId = checkNotNull(jobId);
-		this.jobName = checkNotNull(jobName);
-		this.startTime = startTime;
-		this.endTime = endTime;
-		this.duration = duration;
-		this.status = checkNotNull(status);
-		this.lastUpdateTime = lastUpdateTime;
-		Preconditions.checkArgument(tasksPerState.length == ExecutionState.values().length, 
-			"tasksPerState argument must be of size %s.", ExecutionState.values().length);
-		this.tasksPerState = checkNotNull(tasksPerState);
-		this.numTasks = numTasks;
-	}
-	
-	// ------------------------------------------------------------------------
+    private transient Map<String, Integer> lazyTaskInfo = null;
 
-	public JobID getJobId() {
-		return jobId;
-	}
+    /**
+     * The map holds the attempt number of the current execution attempt in the Execution, which is
+     * considered as the representing execution for the subtask of the vertex. The keys and values
+     * are JobVertexID -> SubtaskIndex -> CurrenAttempts info.
+     *
+     * <p>The field is excluded from the json. Any usage from the web UI and the history server is
+     * not allowed.
+     */
+    private final Map<String, Map<Integer, CurrentAttempts>> currentExecutionAttempts;
 
-	public String getJobName() {
-		return jobName;
-	}
+    @JsonCreator
+    public JobDetails(
+            @JsonProperty(FIELD_NAME_JOB_ID) @JsonDeserialize(using = JobIDDeserializer.class)
+                    JobID jobId,
+            @JsonProperty(FIELD_NAME_JOB_NAME) String jobName,
+            @JsonProperty(FIELD_NAME_START_TIME) long startTime,
+            @JsonProperty(FIELD_NAME_END_TIME) long endTime,
+            @JsonProperty(FIELD_NAME_DURATION) long duration,
+            @JsonProperty(FIELD_NAME_STATUS) JobStatus status,
+            @JsonProperty(FIELD_NAME_LAST_MODIFICATION) long lastUpdateTime,
+            @JsonProperty(FIELD_NAME_TASKS) Map<String, Integer> taskInfo) {
+        this(
+                jobId,
+                jobName,
+                startTime,
+                endTime,
+                duration,
+                status,
+                lastUpdateTime,
+                extractNumTasksPerState(taskInfo),
+                taskInfo.get(FIELD_NAME_TOTAL_NUMBER_TASKS));
+    }
 
-	public long getStartTime() {
-		return startTime;
-	}
+    @VisibleForTesting
+    public JobDetails(
+            JobID jobId,
+            String jobName,
+            long startTime,
+            long endTime,
+            long duration,
+            JobStatus status,
+            long lastUpdateTime,
+            int[] tasksPerState,
+            int numTasks) {
+        this(
+                jobId,
+                jobName,
+                startTime,
+                endTime,
+                duration,
+                status,
+                lastUpdateTime,
+                tasksPerState,
+                numTasks,
+                new HashMap<>());
+    }
 
-	public long getEndTime() {
-		return endTime;
-	}
+    public JobDetails(
+            JobID jobId,
+            String jobName,
+            long startTime,
+            long endTime,
+            long duration,
+            JobStatus status,
+            long lastUpdateTime,
+            int[] tasksPerState,
+            int numTasks,
+            Map<String, Map<Integer, CurrentAttempts>> currentExecutionAttempts) {
+        this.jobId = checkNotNull(jobId);
+        this.jobName = checkNotNull(jobName);
+        this.startTime = startTime;
+        this.endTime = endTime;
+        this.duration = duration;
+        this.status = checkNotNull(status);
+        this.lastUpdateTime = lastUpdateTime;
+        Preconditions.checkArgument(
+                tasksPerState.length == ExecutionState.values().length,
+                "tasksPerState argument must be of size %s.",
+                ExecutionState.values().length);
+        this.tasksPerState = checkNotNull(tasksPerState);
+        this.numTasks = numTasks;
+        this.currentExecutionAttempts = checkNotNull(currentExecutionAttempts);
+    }
 
-	public long getDuration() {
-		return duration;
-	}
+    public static JobDetails createDetailsForJob(AccessExecutionGraph job) {
+        JobStatus status = job.getState();
 
-	public JobStatus getStatus() {
-		return status;
-	}
+        long started = job.getStatusTimestamp(JobStatus.INITIALIZING);
+        long finished = status.isGloballyTerminalState() ? job.getStatusTimestamp(status) : -1L;
+        long duration = (finished >= 0L ? finished : System.currentTimeMillis()) - started;
 
-	public long getLastUpdateTime() {
-		return lastUpdateTime;
-	}
+        int[] countsPerStatus = new int[ExecutionState.values().length];
+        long lastChanged = 0;
+        int numTotalTasks = 0;
+        Map<String, Map<Integer, CurrentAttempts>> currentExecutionAttempts = new HashMap<>();
 
-	public int getNumTasks() {
-		return numTasks;
-	}
+        for (AccessExecutionJobVertex ejv : job.getVerticesTopologically()) {
+            AccessExecutionVertex[] taskVertices = ejv.getTaskVertices();
+            numTotalTasks += taskVertices.length;
+            Map<Integer, CurrentAttempts> vertexAttempts = new HashMap<>();
 
-	public int[] getTasksPerState() {
-		return tasksPerState;
-	}
+            for (AccessExecutionVertex taskVertex : taskVertices) {
+                ExecutionState state = taskVertex.getExecutionState();
+                countsPerStatus[state.ordinal()]++;
+                lastChanged = Math.max(lastChanged, taskVertex.getStateTimestamp(state));
 
-	// ------------------------------------------------------------------------
+                vertexAttempts.put(
+                        taskVertex.getParallelSubtaskIndex(),
+                        new CurrentAttempts(
+                                taskVertex.getCurrentExecutionAttempt().getAttemptNumber(),
+                                taskVertex.getCurrentExecutions().stream()
+                                        .map(AccessExecution::getAttemptNumber)
+                                        .collect(Collectors.toSet())));
+            }
 
-	@Override
-	public boolean equals(Object o) {
-		if (this == o) {
-			return true;
-		}
-		else if (o != null && o.getClass() == JobDetails.class) {
-			JobDetails that = (JobDetails) o;
+            if (!vertexAttempts.isEmpty()) {
+                currentExecutionAttempts.put(String.valueOf(ejv.getJobVertexId()), vertexAttempts);
+            }
+        }
 
-			return this.endTime == that.endTime &&
-					this.lastUpdateTime == that.lastUpdateTime &&
-					this.numTasks == that.numTasks &&
-					this.startTime == that.startTime &&
-					this.status == that.status &&
-					this.jobId.equals(that.jobId) &&
-					this.jobName.equals(that.jobName) &&
-					Arrays.equals(this.tasksPerState, that.tasksPerState);
-		}
-		else {
-			return false;
-		}
-	}
+        lastChanged = Math.max(lastChanged, finished);
 
-	@Override
-	public int hashCode() {
-		int result = jobId.hashCode();
-		result = 31 * result + jobName.hashCode();
-		result = 31 * result + (int) (startTime ^ (startTime >>> 32));
-		result = 31 * result + (int) (endTime ^ (endTime >>> 32));
-		result = 31 * result + status.hashCode();
-		result = 31 * result + (int) (lastUpdateTime ^ (lastUpdateTime >>> 32));
-		result = 31 * result + Arrays.hashCode(tasksPerState);
-		result = 31 * result + numTasks;
-		return result;
-	}
+        return new JobDetails(
+                job.getJobID(),
+                job.getJobName(),
+                started,
+                finished,
+                duration,
+                status,
+                lastChanged,
+                countsPerStatus,
+                numTotalTasks,
+                currentExecutionAttempts);
+    }
 
-	@Override
-	public String toString() {
-		return "JobDetails {" +
-				"jobId=" + jobId +
-				", jobName='" + jobName + '\'' +
-				", startTime=" + startTime +
-				", endTime=" + endTime +
-				", status=" + status +
-				", lastUpdateTime=" + lastUpdateTime +
-				", numVerticesPerExecutionState=" + Arrays.toString(tasksPerState) +
-				", numTasks=" + numTasks +
-				'}';
-	}
+    // ------------------------------------------------------------------------
 
-	public static final class JobDetailsSerializer extends StdSerializer<JobDetails> {
-		private static final long serialVersionUID = 7915913423515194428L;
+    @JsonProperty(FIELD_NAME_JOB_ID)
+    @JsonSerialize(using = JobIDSerializer.class)
+    public JobID getJobId() {
+        return jobId;
+    }
 
-		public JobDetailsSerializer() {
-			super(JobDetails.class);
-		}
+    @JsonProperty(FIELD_NAME_JOB_NAME)
+    public String getJobName() {
+        return jobName;
+    }
 
-		@Override
-		public void serialize(
-				JobDetails jobDetails,
-				JsonGenerator jsonGenerator,
-				SerializerProvider serializerProvider) throws IOException {
-			jsonGenerator.writeStartObject();
+    @JsonProperty(FIELD_NAME_START_TIME)
+    public long getStartTime() {
+        return startTime;
+    }
 
-			jsonGenerator.writeStringField(FIELD_NAME_JOB_ID, jobDetails.getJobId().toString());
-			jsonGenerator.writeStringField(FIELD_NAME_JOB_NAME, jobDetails.getJobName());
-			jsonGenerator.writeStringField(FIELD_NAME_STATUS, jobDetails.getStatus().name());
+    @JsonProperty(FIELD_NAME_END_TIME)
+    public long getEndTime() {
+        return endTime;
+    }
 
-			jsonGenerator.writeNumberField(FIELD_NAME_START_TIME, jobDetails.getStartTime());
-			jsonGenerator.writeNumberField(FIELD_NAME_END_TIME, jobDetails.getEndTime());
-			jsonGenerator.writeNumberField(FIELD_NAME_DURATION, jobDetails.getDuration());
-			jsonGenerator.writeNumberField(FIELD_NAME_LAST_MODIFICATION, jobDetails.getLastUpdateTime());
+    @JsonProperty(FIELD_NAME_DURATION)
+    public long getDuration() {
+        return duration;
+    }
 
-			jsonGenerator.writeObjectFieldStart("tasks");
-			jsonGenerator.writeNumberField(FIELD_NAME_TOTAL_NUMBER_TASKS, jobDetails.getNumTasks());
+    @JsonProperty(FIELD_NAME_STATUS)
+    public JobStatus getStatus() {
+        return status;
+    }
 
-			final int[] perState = jobDetails.getTasksPerState();
+    @JsonProperty(FIELD_NAME_LAST_MODIFICATION)
+    public long getLastUpdateTime() {
+        return lastUpdateTime;
+    }
 
-			for (ExecutionState executionState : ExecutionState.values()) {
-				jsonGenerator.writeNumberField(executionState.name().toLowerCase(), perState[executionState.ordinal()]);
-			}
+    @JsonProperty(FIELD_NAME_TASKS)
+    public Map<String, Integer> getTaskInfo() {
+        if (lazyTaskInfo == null) {
+            final Map<String, Integer> taskInfo = new HashMap<>();
+            taskInfo.put(FIELD_NAME_TOTAL_NUMBER_TASKS, getNumTasks());
+            for (ExecutionState executionState : ExecutionState.values()) {
+                taskInfo.put(
+                        executionState.name().toLowerCase(),
+                        tasksPerState[executionState.ordinal()]);
+            }
+            lazyTaskInfo = taskInfo;
+        }
+        return lazyTaskInfo;
+    }
 
-			jsonGenerator.writeEndObject();
+    @JsonIgnore
+    public int getNumTasks() {
+        return numTasks;
+    }
 
-			jsonGenerator.writeEndObject();
-		}
-	}
+    @JsonIgnore
+    public int[] getTasksPerState() {
+        return tasksPerState;
+    }
 
-	public static final class JobDetailsDeserializer extends StdDeserializer<JobDetails> {
+    @JsonIgnore
+    public Map<String, Map<Integer, CurrentAttempts>> getCurrentExecutionAttempts() {
+        return currentExecutionAttempts;
+    }
+    // ------------------------------------------------------------------------
 
-		private static final long serialVersionUID = 6089784742093294800L;
+    private static int[] extractNumTasksPerState(Map<String, Integer> ex) {
+        int[] tasksPerState = new int[ExecutionState.values().length];
+        for (ExecutionState value : ExecutionState.values()) {
+            tasksPerState[value.ordinal()] =
+                    ex.getOrDefault(value.name().toLowerCase(Locale.ROOT), 0);
+        }
+        return tasksPerState;
+    }
 
-		public JobDetailsDeserializer() {
-			super(JobDetails.class);
-		}
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        } else if (o != null && o.getClass() == JobDetails.class) {
+            JobDetails that = (JobDetails) o;
 
-		@Override
-		public JobDetails deserialize(JsonParser jsonParser, DeserializationContext deserializationContext) throws IOException {
+            return this.endTime == that.endTime
+                    && this.lastUpdateTime == that.lastUpdateTime
+                    && this.numTasks == that.numTasks
+                    && this.startTime == that.startTime
+                    && this.status == that.status
+                    && this.jobId.equals(that.jobId)
+                    && this.jobName.equals(that.jobName)
+                    && Arrays.equals(this.tasksPerState, that.tasksPerState)
+                    && this.currentExecutionAttempts.equals(that.currentExecutionAttempts);
+        } else {
+            return false;
+        }
+    }
 
-			JsonNode rootNode = jsonParser.readValueAsTree();
+    @Override
+    public int hashCode() {
+        int result = jobId.hashCode();
+        result = 31 * result + jobName.hashCode();
+        result = 31 * result + (int) (startTime ^ (startTime >>> 32));
+        result = 31 * result + (int) (endTime ^ (endTime >>> 32));
+        result = 31 * result + status.hashCode();
+        result = 31 * result + (int) (lastUpdateTime ^ (lastUpdateTime >>> 32));
+        result = 31 * result + Arrays.hashCode(tasksPerState);
+        result = 31 * result + numTasks;
+        result = 31 * result + currentExecutionAttempts.hashCode();
+        return result;
+    }
 
-			JobID jobId = JobID.fromHexString(rootNode.get(FIELD_NAME_JOB_ID).textValue());
-			String jobName = rootNode.get(FIELD_NAME_JOB_NAME).textValue();
-			long startTime = rootNode.get(FIELD_NAME_START_TIME).longValue();
-			long endTime = rootNode.get(FIELD_NAME_END_TIME).longValue();
-			long duration = rootNode.get(FIELD_NAME_DURATION).longValue();
-			JobStatus jobStatus = JobStatus.valueOf(rootNode.get(FIELD_NAME_STATUS).textValue());
-			long lastUpdateTime = rootNode.get(FIELD_NAME_LAST_MODIFICATION).longValue();
+    @Override
+    public String toString() {
+        return "JobDetails {"
+                + "jobId="
+                + jobId
+                + ", jobName='"
+                + jobName
+                + '\''
+                + ", startTime="
+                + startTime
+                + ", endTime="
+                + endTime
+                + ", status="
+                + status
+                + ", lastUpdateTime="
+                + lastUpdateTime
+                + ", numVerticesPerExecutionState="
+                + Arrays.toString(tasksPerState)
+                + ", numTasks="
+                + numTasks
+                + '}';
+    }
 
-			JsonNode tasksNode = rootNode.get("tasks");
-			int numTasks = tasksNode.get(FIELD_NAME_TOTAL_NUMBER_TASKS).intValue();
+    /**
+     * The CurrentAttempts holds the attempt number of the current representative execution attempt,
+     * and the attempt numbers of all the running attempts.
+     */
+    public static final class CurrentAttempts implements Serializable {
+        private final int representativeAttempt;
 
-			int[] numVerticesPerExecutionState = new int[ExecutionState.values().length];
+        private final Set<Integer> currentAttempts;
 
-			for (ExecutionState executionState : ExecutionState.values()) {
-				numVerticesPerExecutionState[executionState.ordinal()] = tasksNode.get(executionState.name().toLowerCase()).intValue();
-			}
+        public CurrentAttempts(int representativeAttempt, Set<Integer> currentAttempts) {
+            this.representativeAttempt = representativeAttempt;
+            this.currentAttempts = Collections.unmodifiableSet(currentAttempts);
+        }
 
-			return new JobDetails(
-				jobId,
-				jobName,
-				startTime,
-				endTime,
-				duration,
-				jobStatus,
-				lastUpdateTime,
-				numVerticesPerExecutionState,
-				numTasks);
-		}
-	}
+        public int getRepresentativeAttempt() {
+            return representativeAttempt;
+        }
+
+        public Set<Integer> getCurrentAttempts() {
+            return currentAttempts;
+        }
+    }
 }

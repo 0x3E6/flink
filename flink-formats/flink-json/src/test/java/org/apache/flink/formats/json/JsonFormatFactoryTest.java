@@ -20,178 +20,213 @@ package org.apache.flink.formats.json;
 
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.serialization.SerializationSchema;
-import org.apache.flink.configuration.Configuration;
-import org.apache.flink.table.api.DataTypes;
-import org.apache.flink.table.api.TableSchema;
+import org.apache.flink.formats.common.TimestampFormat;
 import org.apache.flink.table.api.ValidationException;
-import org.apache.flink.table.catalog.CatalogTableImpl;
-import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.data.RowData;
-import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.factories.TestDynamicTableFactory;
+import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
-import org.apache.flink.table.types.logical.RowType;
-import org.apache.flink.util.TestLogger;
 
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import org.assertj.core.api.AbstractThrowableAssert;
+import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Consumer;
 
-import static org.apache.flink.core.testutils.FlinkMatchers.containsCause;
-import static org.junit.Assert.assertEquals;
+import static org.apache.flink.core.testutils.FlinkAssertions.anyCauseMatches;
+import static org.apache.flink.table.factories.utils.FactoryMocks.PHYSICAL_DATA_TYPE;
+import static org.apache.flink.table.factories.utils.FactoryMocks.PHYSICAL_TYPE;
+import static org.apache.flink.table.factories.utils.FactoryMocks.SCHEMA;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/**
- * Tests for the {@link JsonFormatFactory}.
- */
-public class JsonFormatFactoryTest extends TestLogger {
-	@Rule
-	public ExpectedException thrown = ExpectedException.none();
+/** Tests for the {@link JsonFormatFactory}. */
+class JsonFormatFactoryTest {
 
-	private static final TableSchema SCHEMA = TableSchema.builder()
-			.field("field1", DataTypes.BOOLEAN())
-			.field("field2", DataTypes.INT())
-			.build();
+    @Test
+    void testSeDeSchema() {
+        final Map<String, String> tableOptions = getAllOptions();
 
-	private static final RowType ROW_TYPE = (RowType) SCHEMA.toRowDataType().getLogicalType();
+        testSchemaSerializationSchema(tableOptions);
+        testSchemaDeserializationSchema(tableOptions);
+    }
 
-	@Test
-	public void testSeDeSchema() {
-		final Map<String, String> tableOptions = getAllOptions();
+    @Test
+    void testFailOnMissingField() {
+        final Map<String, String> tableOptions =
+                getModifyOptions(options -> options.put("json.fail-on-missing-field", "true"));
 
-		testSchemaSerializationSchema(tableOptions);
+        assertThatCreateRuntimeDecoder(tableOptions)
+                .satisfies(
+                        anyCauseMatches(
+                                ValidationException.class,
+                                "fail-on-missing-field and ignore-parse-errors shouldn't both be true."));
+    }
 
-		testSchemaDeserializationSchema(tableOptions);
-	}
+    @Test
+    void testInvalidOptionForIgnoreParseErrors() {
+        final Map<String, String> tableOptions =
+                getModifyOptions(options -> options.put("json.ignore-parse-errors", "abc"));
 
-	@Test
-	public void testFailOnMissingField() {
-		final Map<String, String> tableOptions = getModifyOptions(
-				options -> options.put("json.fail-on-missing-field", "true"));
+        assertThatCreateRuntimeDecoder(tableOptions)
+                .satisfies(
+                        anyCauseMatches(
+                                IllegalArgumentException.class,
+                                "Unrecognized option for boolean: abc. Expected either true or false(case insensitive)"));
+    }
 
-		thrown.expect(ValidationException.class);
-		thrown.expect(containsCause(new ValidationException("fail-on-missing-field and ignore-parse-errors shouldn't both be true.")));
-		testSchemaDeserializationSchema(tableOptions);
-	}
+    @Test
+    void testInvalidOptionForTimestampFormat() {
+        final Map<String, String> tableOptions =
+                getModifyOptions(options -> options.put("json.timestamp-format.standard", "test"));
 
-	@Test
-	public void testInvalidOptionForIgnoreParseErrors() {
-		final Map<String, String> tableOptions = getModifyOptions(
-				options -> options.put("json.ignore-parse-errors", "abc"));
+        assertThatCreateRuntimeDecoder(tableOptions)
+                .satisfies(
+                        anyCauseMatches(
+                                ValidationException.class,
+                                "Unsupported value 'test' for timestamp-format.standard. Supported values are [SQL, ISO-8601]."));
+    }
 
-		thrown.expect(ValidationException.class);
-		thrown.expect(containsCause(new IllegalArgumentException("Unrecognized option for boolean: abc. Expected either true or false(case insensitive)")));
-		testSchemaDeserializationSchema(tableOptions);
-	}
+    @Test
+    void testLowerCaseOptionForTimestampFormat() {
+        final Map<String, String> tableOptions =
+                getModifyOptions(
+                        options -> options.put("json.timestamp-format.standard", "iso-8601"));
 
-	@Test
-	public void testInvalidOptionForTimestampFormat() {
-		final Map<String, String> tableOptions = getModifyOptions(
-			options -> options.put("json.timestamp-format.standard", "test"));
+        assertThatCreateRuntimeDecoder(tableOptions)
+                .satisfies(
+                        anyCauseMatches(
+                                ValidationException.class,
+                                "Unsupported value 'iso-8601' for timestamp-format.standard. Supported values are [SQL, ISO-8601]."));
+    }
 
-		thrown.expect(ValidationException.class);
-		thrown.expect(containsCause(new ValidationException("Unsupported value 'test' for timestamp-format.standard. Supported values are [SQL, ISO-8601].")));
-		testSchemaDeserializationSchema(tableOptions);
-	}
+    @Test
+    void testInvalidOptionForMapNullKeyMode() {
+        final Map<String, String> tableOptions =
+                getModifyOptions(options -> options.put("json.map-null-key.mode", "invalid"));
 
-	@Test
-	public void testLowerCaseOptionForTimestampFormat() {
-		final Map<String, String> tableOptions = getModifyOptions(
-			options -> options.put("json.timestamp-format.standard", "iso-8601"));
+        assertThatCreateRuntimeEncoder(tableOptions)
+                .satisfies(
+                        anyCauseMatches(
+                                ValidationException.class,
+                                "Unsupported value 'invalid' for option map-null-key.mode. Supported values are [LITERAL, FAIL, DROP]."));
+    }
 
-		thrown.expect(ValidationException.class);
-		thrown.expect(containsCause(new ValidationException("Unsupported value 'iso-8601' for timestamp-format.standard. Supported values are [SQL, ISO-8601].")));
-		testSchemaDeserializationSchema(tableOptions);
-	}
-	// ------------------------------------------------------------------------
-	//  Utilities
-	// ------------------------------------------------------------------------
+    @Test
+    void testLowerCaseOptionForMapNullKeyMode() {
+        final Map<String, String> tableOptions =
+                getModifyOptions(options -> options.put("json.map-null-key.mode", "fail"));
 
-	private void testSchemaDeserializationSchema(Map<String, String> options) {
-		final JsonRowDataDeserializationSchema expectedDeser =
-				new JsonRowDataDeserializationSchema(
-						ROW_TYPE,
-						InternalTypeInfo.of(ROW_TYPE),
-						false,
-						true,
-						TimestampFormat.ISO_8601);
+        testSchemaDeserializationSchema(tableOptions);
+    }
 
-		final DynamicTableSource actualSource = createTableSource(options);
-		assert actualSource instanceof TestDynamicTableFactory.DynamicTableSourceMock;
-		TestDynamicTableFactory.DynamicTableSourceMock scanSourceMock =
-				(TestDynamicTableFactory.DynamicTableSourceMock) actualSource;
+    // ------------------------------------------------------------------------
+    //  Utilities
+    // ------------------------------------------------------------------------
 
-		DeserializationSchema<RowData> actualDeser = scanSourceMock.valueFormat
-				.createRuntimeDecoder(
-						ScanRuntimeProviderContext.INSTANCE,
-						SCHEMA.toRowDataType());
+    private AbstractThrowableAssert<?, ? extends Throwable> assertThatCreateRuntimeDecoder(
+            Map<String, String> options) {
+        return assertThatThrownBy(
+                () ->
+                        createTableSource(options)
+                                .valueFormat
+                                .createRuntimeDecoder(
+                                        ScanRuntimeProviderContext.INSTANCE,
+                                        SCHEMA.toPhysicalRowDataType()));
+    }
 
-		assertEquals(expectedDeser, actualDeser);
-	}
+    private AbstractThrowableAssert<?, ? extends Throwable> assertThatCreateRuntimeEncoder(
+            Map<String, String> options) {
+        return assertThatThrownBy(
+                () ->
+                        createTableSink(options)
+                                .valueFormat
+                                .createRuntimeEncoder(
+                                        new SinkRuntimeProviderContext(false), PHYSICAL_DATA_TYPE));
+    }
 
-	private void testSchemaSerializationSchema(Map<String, String> options) {
-		final JsonRowDataSerializationSchema expectedSer = new JsonRowDataSerializationSchema(ROW_TYPE,
-			TimestampFormat.ISO_8601);
+    private void testSchemaDeserializationSchema(Map<String, String> options) {
+        final JsonRowDataDeserializationSchema expectedDeser =
+                new JsonRowDataDeserializationSchema(
+                        PHYSICAL_TYPE,
+                        InternalTypeInfo.of(PHYSICAL_TYPE),
+                        false,
+                        true,
+                        TimestampFormat.ISO_8601);
 
-		final DynamicTableSink actualSink = createTableSink(options);
-		assert actualSink instanceof TestDynamicTableFactory.DynamicTableSinkMock;
-		TestDynamicTableFactory.DynamicTableSinkMock sinkMock =
-				(TestDynamicTableFactory.DynamicTableSinkMock) actualSink;
+        DeserializationSchema<RowData> actualDeser =
+                createTableSource(options)
+                        .valueFormat
+                        .createRuntimeDecoder(
+                                ScanRuntimeProviderContext.INSTANCE,
+                                SCHEMA.toPhysicalRowDataType());
 
-		SerializationSchema<RowData> actualSer = sinkMock.valueFormat
-				.createRuntimeEncoder(
-						new SinkRuntimeProviderContext(false),
-						SCHEMA.toRowDataType());
+        assertThat(actualDeser).isEqualTo(expectedDeser);
+    }
 
-		assertEquals(expectedSer, actualSer);
-	}
+    private void testSchemaSerializationSchema(Map<String, String> options) {
+        final JsonRowDataSerializationSchema expectedSer =
+                new JsonRowDataSerializationSchema(
+                        PHYSICAL_TYPE,
+                        TimestampFormat.ISO_8601,
+                        JsonFormatOptions.MapNullKeyMode.LITERAL,
+                        "null",
+                        true);
 
-	/**
-	 * Returns the full options modified by the given consumer {@code optionModifier}.
-	 *
-	 * @param optionModifier Consumer to modify the options
-	 */
-	private Map<String, String> getModifyOptions(Consumer<Map<String, String>> optionModifier) {
-		Map<String, String> options = getAllOptions();
-		optionModifier.accept(options);
-		return options;
-	}
+        SerializationSchema<RowData> actualSer =
+                createTableSink(options)
+                        .valueFormat
+                        .createRuntimeEncoder(
+                                new SinkRuntimeProviderContext(false), PHYSICAL_DATA_TYPE);
 
-	private Map<String, String> getAllOptions() {
-		final Map<String, String> options = new HashMap<>();
-		options.put("connector", TestDynamicTableFactory.IDENTIFIER);
-		options.put("target", "MyTarget");
-		options.put("buffer-size", "1000");
+        assertThat(actualSer).isEqualTo(expectedSer);
+    }
 
-		options.put("format", JsonFormatFactory.IDENTIFIER);
-		options.put("json.fail-on-missing-field", "false");
-		options.put("json.ignore-parse-errors", "true");
-		options.put("json.timestamp-format.standard", "ISO-8601");
-		return options;
-	}
+    private TestDynamicTableFactory.DynamicTableSinkMock createTableSink(
+            Map<String, String> options) {
+        final DynamicTableSink actualSink = FactoryMocks.createTableSink(SCHEMA, options);
+        assertThat(actualSink).isInstanceOf(TestDynamicTableFactory.DynamicTableSinkMock.class);
 
-	private static DynamicTableSource createTableSource(Map<String, String> options) {
-		return FactoryUtil.createTableSource(
-				null,
-				ObjectIdentifier.of("default", "default", "t1"),
-				new CatalogTableImpl(SCHEMA, options, "Mock scan table"),
-				new Configuration(),
-				JsonFormatFactoryTest.class.getClassLoader());
-	}
+        return (TestDynamicTableFactory.DynamicTableSinkMock) actualSink;
+    }
 
-	private static DynamicTableSink createTableSink(Map<String, String> options) {
-		return FactoryUtil.createTableSink(
-				null,
-				ObjectIdentifier.of("default", "default", "t1"),
-				new CatalogTableImpl(SCHEMA, options, "Mock sink table"),
-				new Configuration(),
-				JsonFormatFactoryTest.class.getClassLoader());
-	}
+    private TestDynamicTableFactory.DynamicTableSourceMock createTableSource(
+            Map<String, String> options) {
+        final DynamicTableSource actualSource = FactoryMocks.createTableSource(SCHEMA, options);
+        assertThat(actualSource).isInstanceOf(TestDynamicTableFactory.DynamicTableSourceMock.class);
+
+        return (TestDynamicTableFactory.DynamicTableSourceMock) actualSource;
+    }
+
+    /**
+     * Returns the full options modified by the given consumer {@code optionModifier}.
+     *
+     * @param optionModifier Consumer to modify the options
+     */
+    private Map<String, String> getModifyOptions(Consumer<Map<String, String>> optionModifier) {
+        Map<String, String> options = getAllOptions();
+        optionModifier.accept(options);
+        return options;
+    }
+
+    private Map<String, String> getAllOptions() {
+        final Map<String, String> options = new HashMap<>();
+        options.put("connector", TestDynamicTableFactory.IDENTIFIER);
+        options.put("target", "MyTarget");
+        options.put("buffer-size", "1000");
+
+        options.put("format", JsonFormatFactory.IDENTIFIER);
+        options.put("json.fail-on-missing-field", "false");
+        options.put("json.ignore-parse-errors", "true");
+        options.put("json.timestamp-format.standard", "ISO-8601");
+        options.put("json.map-null-key.mode", "LITERAL");
+        options.put("json.map-null-key.literal", "null");
+        options.put("json.encode.decimal-as-plain-number", "true");
+        return options;
+    }
 }

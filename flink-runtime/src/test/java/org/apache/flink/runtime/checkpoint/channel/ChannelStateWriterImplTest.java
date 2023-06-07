@@ -17,16 +17,18 @@
 
 package org.apache.flink.runtime.checkpoint.channel;
 
-import org.apache.flink.core.memory.HeapMemorySegment;
+import org.apache.flink.api.common.JobID;
+import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter.ChannelStateWriteResult;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
 import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
+import org.apache.flink.runtime.jobgraph.JobVertexID;
+import org.apache.flink.runtime.state.storage.JobManagerCheckpointStorage;
 import org.apache.flink.util.function.BiConsumerWithException;
-import org.apache.flink.util.function.RunnableWithException;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
@@ -34,317 +36,390 @@ import java.util.Deque;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
-import static org.apache.flink.runtime.state.ChannelPersistenceITCase.getStreamFactoryFactory;
 import static org.apache.flink.util.CloseableIterator.ofElements;
-import static org.apache.flink.util.ExceptionUtils.findThrowable;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/**
- * {@link ChannelStateWriterImpl} lifecycle tests.
- */
-public class ChannelStateWriterImplTest {
-	private static final long CHECKPOINT_ID = 42L;
-	private static final String TASK_NAME = "test";
+/** {@link ChannelStateWriterImpl} lifecycle tests. */
+class ChannelStateWriterImplTest {
+    private static final long CHECKPOINT_ID = 42L;
+    private static final String TASK_NAME = "test";
+    private static final JobID JOB_ID = new JobID();
+    private static final JobVertexID JOB_VERTEX_ID = new JobVertexID();
+    private static final int SUBTASK_INDEX = 0;
 
-	@Test(expected = IllegalArgumentException.class)
-	public void testAddEventBuffer() throws Exception {
+    @Test
+    void testAddEventBuffer() throws Exception {
 
-		NetworkBuffer dataBuf = getBuffer();
-		NetworkBuffer eventBuf = getBuffer();
-		eventBuf.setDataType(Buffer.DataType.EVENT_BUFFER);
-		try {
-			runWithSyncWorker(writer -> {
-				callStart(writer);
-				writer.addInputData(CHECKPOINT_ID, new InputChannelInfo(1, 1), 1, ofElements(Buffer::recycleBuffer, eventBuf, dataBuf));
-			});
-		} finally {
-			assertTrue(dataBuf.isRecycled());
-		}
-	}
+        NetworkBuffer dataBuf = getBuffer();
+        NetworkBuffer eventBuf = getBuffer();
+        eventBuf.setDataType(Buffer.DataType.EVENT_BUFFER);
 
-	@Test
-	public void testResultCompletion() throws IOException {
-		ChannelStateWriteResult result;
-		try (ChannelStateWriterImpl writer = openWriter()) {
-			callStart(writer);
-			result = writer.getAndRemoveWriteResult(CHECKPOINT_ID);
-			assertFalse(result.resultSubpartitionStateHandles.isDone());
-			assertFalse(result.inputChannelStateHandles.isDone());
-		}
-		assertTrue(result.inputChannelStateHandles.isDone());
-		assertTrue(result.resultSubpartitionStateHandles.isDone());
-	}
+        executeCallbackWithSyncWorker(
+                (writer, worker) -> {
+                    callStart(writer);
+                    callAddInputData(writer, eventBuf, dataBuf);
+                    assertThatThrownBy(worker::processAllRequests)
+                            .isInstanceOf(IllegalArgumentException.class);
+                });
+        assertThat(dataBuf.isRecycled()).isTrue();
+    }
 
-	@Test
-	public void testAbort() throws Exception {
-		NetworkBuffer buffer = getBuffer();
-		runWithSyncWorker((writer, worker) -> {
-			callStart(writer);
-			ChannelStateWriteResult result = writer.getAndRemoveWriteResult(CHECKPOINT_ID);
-			callAddInputData(writer, buffer);
-			callAbort(writer);
-			worker.processAllRequests();
-			assertTrue(result.isDone());
-			assertTrue(buffer.isRecycled());
-		});
-	}
+    @Test
+    void testResultCompletion() throws IOException {
+        ChannelStateWriteResult result;
+        try (ChannelStateWriterImpl writer = openWriter()) {
+            callStart(writer);
+            result = writer.getAndRemoveWriteResult(CHECKPOINT_ID);
+            assertThat(result.resultSubpartitionStateHandles).isNotDone();
+            assertThat(result.inputChannelStateHandles).isNotDone();
+        }
+        assertThat(result.inputChannelStateHandles).isDone();
+        assertThat(result.resultSubpartitionStateHandles).isDone();
+    }
 
-	@Test(expected = IllegalArgumentException.class)
-	public void testAbortClearsResults() throws Exception {
-		NetworkBuffer buffer = getBuffer();
-		runWithSyncWorker((writer, worker) -> {
-			callStart(writer);
-			writer.abort(CHECKPOINT_ID, new TestException(), true);
-			writer.getAndRemoveWriteResult(CHECKPOINT_ID);
-		});
-	}
+    @Test
+    void testAbort() throws Exception {
+        NetworkBuffer buffer = getBuffer();
+        executeCallbackWithSyncWorker(
+                (writer, worker) -> {
+                    callStart(writer);
+                    ChannelStateWriteResult result = writer.getAndRemoveWriteResult(CHECKPOINT_ID);
+                    callAddInputData(writer, buffer);
+                    callAbort(writer);
+                    worker.processAllRequests();
+                    assertThat(result.isDone()).isTrue();
+                    assertThat(buffer.isRecycled()).isTrue();
+                });
+    }
 
-	@Test
-	public void testAbortDoesNotClearsResults() throws Exception {
-		runWithSyncWorker((writer, worker) -> {
-			callStart(writer);
-			callAbort(writer);
-			worker.processAllRequests();
-			writer.getAndRemoveWriteResult(CHECKPOINT_ID);
-		});
-	}
+    @Test
+    void testAbortClearsResults() throws Exception {
+        executeCallbackWithSyncWorker(
+                (writer, worker) -> {
+                    callStart(writer);
+                    writer.abort(CHECKPOINT_ID, new TestException(), true);
 
-	@Test
-	public void testAbortIgnoresMissing() throws Exception {
-		runWithSyncWorker(this::callAbort);
-	}
+                    assertThatThrownBy(() -> writer.getAndRemoveWriteResult(CHECKPOINT_ID))
+                            .isInstanceOf(IllegalArgumentException.class);
+                });
+    }
 
-	@Test(expected = TestException.class)
-	public void testBuffersRecycledOnError() throws Exception {
-		unwrappingError(TestException.class, () -> {
-			NetworkBuffer buffer = getBuffer();
-			try (ChannelStateWriterImpl writer = new ChannelStateWriterImpl(
-					TASK_NAME,
-					new ConcurrentHashMap<>(),
-					failingWorker(),
-					5)) {
-				writer.open();
-				callAddInputData(writer, buffer);
-			} finally {
-				assertTrue(buffer.isRecycled());
-			}
-		});
-	}
+    @Test
+    void testAbortDoesNotClearsResults() throws Exception {
+        executeCallbackWithSyncWorker(
+                (writer, worker) -> {
+                    callStart(writer);
+                    callAbort(writer);
+                    worker.processAllRequests();
+                    writer.getAndRemoveWriteResult(CHECKPOINT_ID);
+                });
+    }
 
-	@Test
-	public void testBuffersRecycledOnClose() throws Exception {
-		NetworkBuffer buffer = getBuffer();
-		runWithSyncWorker(writer -> {
-			callStart(writer);
-			callAddInputData(writer, buffer);
-			assertFalse(buffer.isRecycled());
-		});
-		assertTrue(buffer.isRecycled());
-	}
+    @Test
+    void testAbortIgnoresMissing() throws Exception {
+        executeCallbackAndProcessWithSyncWorker(this::callAbort);
+    }
 
-	@Test(expected = IllegalArgumentException.class)
-	public void testNoAddDataAfterFinished() throws Exception {
-		unwrappingError(IllegalArgumentException.class, () -> runWithSyncWorker(
-			writer -> {
-				callStart(writer);
-				callFinish(writer);
-				callAddInputData(writer);
-			}
-		));
-	}
+    @Test
+    void testAbortOldAndStartNewCheckpoint() throws Exception {
+        executeCallbackWithSyncWorker(
+                (writer, worker) -> {
+                    int checkpoint42 = 42;
+                    int checkpoint43 = 43;
+                    writer.start(
+                            checkpoint42, CheckpointOptions.forCheckpointWithDefaultLocation());
+                    writer.abort(checkpoint42, new TestException(), false);
+                    writer.start(
+                            checkpoint43, CheckpointOptions.forCheckpointWithDefaultLocation());
+                    worker.processAllRequests();
 
-	@Test(expected = IllegalArgumentException.class)
-	public void testAddDataNotStarted() throws Exception {
-		unwrappingError(IllegalArgumentException.class, () -> runWithSyncWorker(writer -> callAddInputData(writer)));
-	}
+                    ChannelStateWriteResult result42 = writer.getAndRemoveWriteResult(checkpoint42);
+                    assertThat(result42.isDone()).isTrue();
+                    assertThatThrownBy(() -> result42.getInputChannelStateHandles().get())
+                            .as("The result should have failed.")
+                            .hasCauseInstanceOf(TestException.class);
 
-	@Test(expected = IllegalArgumentException.class)
-	public void testFinishNotStarted() throws Exception {
-		unwrappingError(IllegalArgumentException.class, () -> runWithSyncWorker(this::callFinish));
-	}
+                    ChannelStateWriteResult result43 = writer.getAndRemoveWriteResult(checkpoint43);
+                    assertThat(result43.isDone()).isFalse();
+                });
+    }
 
-	@Test(expected = IllegalArgumentException.class)
-	public void testRethrowOnClose() throws Exception {
-		unwrappingError(IllegalArgumentException.class, () -> runWithSyncWorker(
-			writer -> {
-				try {
-					callFinish(writer);
-				} catch (IllegalArgumentException e) {
-					// ignore here - should rethrow in close
-				}
-			}
-		));
-	}
+    @Test
+    void testBuffersRecycledOnError() {
+        NetworkBuffer buffer = getBuffer();
+        ChannelStateWriterImpl writer =
+                new ChannelStateWriterImpl(
+                        JOB_VERTEX_ID,
+                        TASK_NAME,
+                        SUBTASK_INDEX,
+                        new ConcurrentHashMap<>(),
+                        failingWorker(),
+                        5);
+        assertThatThrownBy(() -> callAddInputData(writer, buffer))
+                .isInstanceOf(RuntimeException.class)
+                .hasCauseInstanceOf(TestException.class);
+        assertThat(buffer.isRecycled()).isTrue();
+    }
 
-	@Test(expected = TestException.class)
-	public void testRethrowOnNextCall() throws Exception {
-		SyncChannelStateWriteRequestExecutor worker = new SyncChannelStateWriteRequestExecutor();
-		ChannelStateWriterImpl writer = new ChannelStateWriterImpl(TASK_NAME, new ConcurrentHashMap<>(), worker, 5);
-		writer.open();
-		worker.setThrown(new TestException());
-		unwrappingError(TestException.class, () -> callStart(writer));
-	}
+    @Test
+    void testBuffersRecycledOnClose() throws Exception {
+        NetworkBuffer buffer = getBuffer();
+        executeCallbackAndProcessWithSyncWorker(
+                writer -> {
+                    callStart(writer);
+                    callAddInputData(writer, buffer);
+                    assertThat(buffer.isRecycled()).isFalse();
+                });
+        assertThat(buffer.isRecycled()).isTrue();
+    }
 
-	@Test(expected = IllegalStateException.class)
-	public void testLimit() throws IOException {
-		int maxCheckpoints = 3;
-		try (ChannelStateWriterImpl writer = new ChannelStateWriterImpl(TASK_NAME, getStreamFactoryFactory(), maxCheckpoints)) {
-			writer.open();
-			for (int i = 0; i < maxCheckpoints; i++) {
-				writer.start(i, CheckpointOptions.forCheckpointWithDefaultLocation());
-			}
-			writer.start(maxCheckpoints, CheckpointOptions.forCheckpointWithDefaultLocation());
-		}
-	}
+    @Test
+    void testNoAddDataAfterFinished() throws Exception {
+        executeCallbackWithSyncWorker(
+                (writer, worker) -> {
+                    callStart(writer);
+                    callFinish(writer);
+                    worker.processAllRequests();
 
-	@Test(expected = IllegalStateException.class)
-	public void testStartNotOpened() throws Exception {
-		unwrappingError(IllegalStateException.class, () -> {
-			try (ChannelStateWriterImpl writer = new ChannelStateWriterImpl(TASK_NAME, getStreamFactoryFactory())) {
-				callStart(writer);
-			}
-		});
-	}
+                    callAddInputData(writer);
+                    assertThatThrownBy(worker::processAllRequests)
+                            .isInstanceOf(IllegalArgumentException.class);
+                });
+    }
 
-	@Test(expected = IllegalStateException.class)
-	public void testNoStartAfterClose() throws Exception {
-		unwrappingError(IllegalStateException.class, () -> {
-			ChannelStateWriterImpl writer = openWriter();
-			writer.close();
-			writer.start(42, CheckpointOptions.forCheckpointWithDefaultLocation());
-		});
-	}
+    @Test
+    void testAddDataNotStarted() {
+        assertThatThrownBy(() -> executeCallbackAndProcessWithSyncWorker(this::callAddInputData))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 
-	@Test(expected = IllegalStateException.class)
-	public void testNoAddDataAfterClose() throws Exception {
-		unwrappingError(IllegalStateException.class, () -> {
-			ChannelStateWriterImpl writer = openWriter();
-			callStart(writer);
-			writer.close();
-			callAddInputData(writer);
-		});
-	}
+    @Test
+    void testFinishNotStarted() {
+        assertThatThrownBy(() -> executeCallbackAndProcessWithSyncWorker(this::callFinish))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 
-	private static <T extends Throwable> void unwrappingError(Class<T> clazz, RunnableWithException r) throws Exception {
-		try {
-			r.run();
-		} catch (Exception e) {
-			throw findThrowable(e, clazz).map(te -> (Exception) te).orElse(e);
-		}
-	}
+    @Test
+    void testRethrowOnClose() {
+        assertThatThrownBy(
+                        () ->
+                                executeCallbackAndProcessWithSyncWorker(
+                                        writer -> {
+                                            try {
+                                                callFinish(writer);
+                                            } catch (IllegalArgumentException e) {
+                                                // ignore here - should rethrow in
+                                                // close
+                                            }
+                                        }))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 
-	private NetworkBuffer getBuffer() {
-		return new NetworkBuffer(HeapMemorySegment.FACTORY.allocateUnpooledSegment(123, null), FreeingBufferRecycler.INSTANCE);
-	}
+    @Test
+    void testRethrowOnNextCall() {
+        SyncChannelStateWriteRequestExecutor worker =
+                new SyncChannelStateWriteRequestExecutor(JOB_ID);
+        ChannelStateWriterImpl writer =
+                new ChannelStateWriterImpl(
+                        JOB_VERTEX_ID,
+                        TASK_NAME,
+                        SUBTASK_INDEX,
+                        new ConcurrentHashMap<>(),
+                        worker,
+                        5);
+        worker.registerSubtask(JOB_VERTEX_ID, SUBTASK_INDEX);
+        worker.setThrown(new TestException());
+        assertThatThrownBy(() -> callStart(writer)).hasCauseInstanceOf(TestException.class);
+    }
 
-	private ChannelStateWriteRequestExecutor failingWorker() {
-		return new ChannelStateWriteRequestExecutor() {
-			@Override
-			public void close() {
-			}
+    @Test
+    void testLimit() throws IOException {
+        int maxCheckpoints = 3;
+        try (ChannelStateWriterImpl writer =
+                new ChannelStateWriterImpl(
+                        JOB_VERTEX_ID,
+                        TASK_NAME,
+                        SUBTASK_INDEX,
+                        new JobManagerCheckpointStorage(),
+                        maxCheckpoints,
+                        new ChannelStateWriteRequestExecutorFactory(JOB_ID),
+                        5)) {
+            for (int i = 0; i < maxCheckpoints; i++) {
+                writer.start(i, CheckpointOptions.forCheckpointWithDefaultLocation());
+            }
+            assertThatThrownBy(
+                            () ->
+                                    writer.start(
+                                            maxCheckpoints,
+                                            CheckpointOptions.forCheckpointWithDefaultLocation()))
+                    .isInstanceOf(IllegalStateException.class);
+        }
+    }
 
-			@Override
-			public void submit(ChannelStateWriteRequest e) {
-				throw new TestException();
-			}
+    @Test
+    void testNoStartAfterClose() throws IOException {
+        ChannelStateWriterImpl writer = openWriter();
+        writer.close();
+        assertThatThrownBy(
+                        () ->
+                                writer.start(
+                                        42, CheckpointOptions.forCheckpointWithDefaultLocation()))
+                .hasCauseInstanceOf(IllegalStateException.class);
+    }
 
-			@Override
-			public void submitPriority(ChannelStateWriteRequest e) {
-				throw new TestException();
-			}
+    @Test
+    void testNoAddDataAfterClose() throws IOException {
+        ChannelStateWriterImpl writer = openWriter();
+        callStart(writer);
+        writer.close();
+        assertThatThrownBy(() -> callAddInputData(writer))
+                .hasCauseInstanceOf(IllegalStateException.class);
+    }
 
-			@Override
-			public void start() throws IllegalStateException {
-			}
-		};
-	}
+    private NetworkBuffer getBuffer() {
+        return new NetworkBuffer(
+                MemorySegmentFactory.allocateUnpooledSegment(123, null),
+                FreeingBufferRecycler.INSTANCE);
+    }
 
-	private void runWithSyncWorker(Consumer<ChannelStateWriter> writerConsumer) throws Exception {
-		runWithSyncWorker((channelStateWriter, syncChannelStateWriterWorker) -> writerConsumer.accept(channelStateWriter));
-	}
+    private ChannelStateWriteRequestExecutor failingWorker() {
+        return new ChannelStateWriteRequestExecutor() {
 
-	private void runWithSyncWorker(BiConsumerWithException<ChannelStateWriter, SyncChannelStateWriteRequestExecutor, Exception> testFn) throws Exception {
-		try (
-				SyncChannelStateWriteRequestExecutor worker = new SyncChannelStateWriteRequestExecutor();
-				ChannelStateWriterImpl writer = new ChannelStateWriterImpl(TASK_NAME, new ConcurrentHashMap<>(), worker, 5)
-		) {
-			writer.open();
-			testFn.accept(writer, worker);
-			worker.processAllRequests();
-		}
-	}
+            @Override
+            public void submit(ChannelStateWriteRequest e) {
+                throw new TestException();
+            }
 
-	private ChannelStateWriterImpl openWriter() {
-		ChannelStateWriterImpl writer = new ChannelStateWriterImpl(TASK_NAME, getStreamFactoryFactory());
-		writer.open();
-		return writer;
-	}
+            @Override
+            public void submitPriority(ChannelStateWriteRequest e) {
+                throw new TestException();
+            }
 
-	private void callStart(ChannelStateWriter writer) {
-		writer.start(CHECKPOINT_ID, CheckpointOptions.forCheckpointWithDefaultLocation());
-	}
+            @Override
+            public void start() throws IllegalStateException {}
 
-	private void callAddInputData(ChannelStateWriter writer, NetworkBuffer... buffer) {
-		writer.addInputData(CHECKPOINT_ID, new InputChannelInfo(1, 1), 1, ofElements(Buffer::recycleBuffer, buffer));
-	}
+            @Override
+            public void registerSubtask(JobVertexID jobVertexID, int subtaskIndex) {}
 
-	private void callAbort(ChannelStateWriter writer) {
-		writer.abort(CHECKPOINT_ID, new TestException(), false);
-	}
+            @Override
+            public void releaseSubtask(JobVertexID jobVertexID, int subtaskIndex) {}
+        };
+    }
 
-	private void callFinish(ChannelStateWriter writer) {
-		writer.finishInput(CHECKPOINT_ID);
-		writer.finishOutput(CHECKPOINT_ID);
-	}
+    private void executeCallbackAndProcessWithSyncWorker(
+            Consumer<ChannelStateWriter> writerConsumer) throws Exception {
+        executeCallbackWithSyncWorker(
+                (channelStateWriter, syncChannelStateWriterWorker) -> {
+                    writerConsumer.accept(channelStateWriter);
+                    syncChannelStateWriterWorker.processAllRequests();
+                });
+    }
 
+    private void executeCallbackWithSyncWorker(
+            BiConsumerWithException<
+                            ChannelStateWriter, SyncChannelStateWriteRequestExecutor, Exception>
+                    testFn)
+            throws Exception {
+        SyncChannelStateWriteRequestExecutor worker =
+                new SyncChannelStateWriteRequestExecutor(JOB_ID);
+        try (ChannelStateWriterImpl writer =
+                new ChannelStateWriterImpl(
+                        JOB_VERTEX_ID,
+                        TASK_NAME,
+                        SUBTASK_INDEX,
+                        new ConcurrentHashMap<>(),
+                        worker,
+                        5)) {
+            worker.registerSubtask(JOB_VERTEX_ID, SUBTASK_INDEX);
+            testFn.accept(writer, worker);
+        } finally {
+            worker.releaseSubtask(JOB_VERTEX_ID, SUBTASK_INDEX);
+        }
+    }
+
+    private ChannelStateWriterImpl openWriter() {
+        return new ChannelStateWriterImpl(
+                JOB_VERTEX_ID,
+                TASK_NAME,
+                SUBTASK_INDEX,
+                new JobManagerCheckpointStorage(),
+                new ChannelStateWriteRequestExecutorFactory(JOB_ID),
+                5);
+    }
+
+    private void callStart(ChannelStateWriter writer) {
+        writer.start(CHECKPOINT_ID, CheckpointOptions.forCheckpointWithDefaultLocation());
+    }
+
+    private void callAddInputData(ChannelStateWriter writer, NetworkBuffer... buffer) {
+        writer.addInputData(
+                CHECKPOINT_ID,
+                new InputChannelInfo(1, 1),
+                1,
+                ofElements(Buffer::recycleBuffer, buffer));
+    }
+
+    private void callAbort(ChannelStateWriter writer) {
+        writer.abort(CHECKPOINT_ID, new TestException(), false);
+    }
+
+    private void callFinish(ChannelStateWriter writer) {
+        writer.finishInput(CHECKPOINT_ID);
+        writer.finishOutput(CHECKPOINT_ID);
+    }
 }
 
-class TestException extends RuntimeException {
-}
+class TestException extends RuntimeException {}
 
 class SyncChannelStateWriteRequestExecutor implements ChannelStateWriteRequestExecutor {
-	private final ChannelStateWriteRequestDispatcher requestProcessor;
-	private final Deque<ChannelStateWriteRequest> deque;
-	private Exception thrown;
+    private final ChannelStateWriteRequestDispatcher requestProcessor;
+    private final Deque<ChannelStateWriteRequest> deque;
+    private Exception thrown;
 
-	SyncChannelStateWriteRequestExecutor() {
-		deque = new ArrayDeque<>();
-		requestProcessor = new ChannelStateWriteRequestDispatcherImpl(getStreamFactoryFactory(), new ChannelStateSerializerImpl());
-	}
+    SyncChannelStateWriteRequestExecutor(JobID jobID) {
+        deque = new ArrayDeque<>();
+        requestProcessor =
+                new ChannelStateWriteRequestDispatcherImpl(
+                        new JobManagerCheckpointStorage(), jobID, new ChannelStateSerializerImpl());
+    }
 
-	@Override
-	public void submit(ChannelStateWriteRequest e) throws Exception {
-		deque.offer(e);
-		if (thrown != null) {
-			throw thrown;
-		}
-	}
+    @Override
+    public void submit(ChannelStateWriteRequest e) throws Exception {
+        deque.offer(e);
+        if (thrown != null) {
+            throw thrown;
+        }
+    }
 
-	@Override
-	public void submitPriority(ChannelStateWriteRequest e) throws Exception {
-		deque.offerFirst(e);
-		if (thrown != null) {
-			throw thrown;
-		}
-	}
+    @Override
+    public void submitPriority(ChannelStateWriteRequest e) throws Exception {
+        deque.offerFirst(e);
+        if (thrown != null) {
+            throw thrown;
+        }
+    }
 
-	@Override
-	public void start() throws IllegalStateException {
-	}
+    @Override
+    public void start() throws IllegalStateException {}
 
-	@Override
-	public void close() {
-	}
+    @Override
+    public void registerSubtask(JobVertexID jobVertexID, int subtaskIndex) {
+        deque.add(ChannelStateWriteRequest.registerSubtask(jobVertexID, subtaskIndex));
+    }
 
-	void processAllRequests() throws Exception {
-		while (!deque.isEmpty()) {
-			requestProcessor.dispatch(deque.poll());
-		}
-	}
+    @Override
+    public void releaseSubtask(JobVertexID jobVertexID, int subtaskIndex) {
+        deque.add(ChannelStateWriteRequest.releaseSubtask(jobVertexID, subtaskIndex));
+    }
 
-	public void setThrown(Exception thrown) {
-		this.thrown = thrown;
-	}
+    void processAllRequests() throws Exception {
+        while (!deque.isEmpty()) {
+            requestProcessor.dispatch(deque.poll());
+        }
+    }
+
+    public void setThrown(Exception thrown) {
+        this.thrown = thrown;
+    }
 }
-

@@ -16,29 +16,15 @@
     limitations under the License.
    ################################################################################
 
-Welcome to Flink Python API Docs!
-==================================================
+=============================
+Welcome to Flink Python Docs!
+=============================
+
+.. mdinclude:: ../README.md
 
 .. toctree::
-   :maxdepth: 2
-   :caption: Contents
+    :maxdepth: 2
+    :hidden:
 
-   pyflink
-   pyflink.common
-   pyflink.table
-   pyflink.dataset
-   pyflink.datastream
-   pyflink.ml
-   pyflink.metrics
-
-
-Core Classes:
----------------
-
-    :class:`pyflink.table.TableEnvironment`
-
-    Main entry point for Flink Table functionality.
-
-    :class:`pyflink.table.Table`
-
-    Core component of the Flink Table API. The Flink Table API is built around :class:`~pyflink.table.Table`.
+    reference/index
+    examples/index

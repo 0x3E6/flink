@@ -25,31 +25,28 @@ import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.Serializable;
 
-/**
- * Wrap {@link Configuration} to a serializable class.
- */
+/** Wrap {@link Configuration} to a serializable class. */
 public class SerializableConfiguration implements Serializable {
 
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	private Configuration conf;
+    private transient Configuration conf;
 
-	public SerializableConfiguration(Configuration conf) {
-		this.conf = conf;
-	}
+    public SerializableConfiguration(Configuration conf) {
+        this.conf = conf;
+    }
 
-	public Configuration conf() {
-		return conf;
-	}
+    public Configuration conf() {
+        return conf;
+    }
 
-	private void writeObject(ObjectOutputStream out) throws IOException {
-		conf.write(out);
-	}
+    private void writeObject(ObjectOutputStream out) throws IOException {
+        out.defaultWriteObject();
+        conf.write(out);
+    }
 
-	private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
-		if (conf == null) {
-			conf = new Configuration();
-		}
-		conf.readFields(in);
-	}
+    private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
+        conf = new Configuration(false);
+        conf.readFields(in);
+    }
 }

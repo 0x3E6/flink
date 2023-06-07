@@ -17,29 +17,23 @@
 
 package org.apache.flink.runtime.resourcemanager;
 
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
-import org.apache.flink.runtime.heartbeat.HeartbeatServices;
-import org.apache.flink.runtime.highavailability.TestingHighAvailabilityServices;
 import org.apache.flink.runtime.instance.HardwareDescription;
-import org.apache.flink.runtime.io.network.partition.ResourceManagerPartitionTrackerImpl;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
 import org.apache.flink.runtime.leaderelection.TestingLeaderElectionService;
-import org.apache.flink.runtime.metrics.groups.UnregisteredMetricGroups;
 import org.apache.flink.runtime.registration.RegistrationResponse;
-import org.apache.flink.runtime.resourcemanager.slotmanager.SlotManager;
-import org.apache.flink.runtime.resourcemanager.slotmanager.SlotManagerBuilder;
 import org.apache.flink.runtime.rpc.RpcUtils;
 import org.apache.flink.runtime.rpc.TestingRpcService;
+import org.apache.flink.runtime.shuffle.ShuffleDescriptor;
 import org.apache.flink.runtime.taskexecutor.SlotReport;
 import org.apache.flink.runtime.taskexecutor.TaskExecutorGateway;
 import org.apache.flink.runtime.taskexecutor.TaskExecutorHeartbeatPayload;
+import org.apache.flink.runtime.taskexecutor.TaskExecutorMemoryConfiguration;
 import org.apache.flink.runtime.taskexecutor.TestingTaskExecutorGatewayBuilder;
 import org.apache.flink.runtime.taskexecutor.partition.ClusterPartitionReport;
-import org.apache.flink.runtime.testingUtils.TestingUtils;
-import org.apache.flink.runtime.util.TestingFatalErrorHandler;
+import org.apache.flink.testutils.TestingUtils;
 import org.apache.flink.util.TestLogger;
 
 import org.junit.After;
@@ -51,196 +45,229 @@ import org.junit.Test;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashSet;
+import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.junit.Assert.assertThat;
 
-/**
- * Tests for the partition-lifecycle logic in the {@link ResourceManager}.
- */
+/** Tests for the partition-lifecycle logic in the {@link ResourceManager}. */
 public class ResourceManagerPartitionLifecycleTest extends TestLogger {
 
-	private static final Time TIMEOUT = Time.minutes(2L);
+    private static TestingRpcService rpcService;
 
-	private static TestingRpcService rpcService;
+    private TestingResourceManagerService resourceManagerService;
 
-	private TestingHighAvailabilityServices highAvailabilityServices;
+    @BeforeClass
+    public static void setupClass() {
+        rpcService = new TestingRpcService();
+    }
 
-	private TestingLeaderElectionService resourceManagerLeaderElectionService;
+    @Before
+    public void setup() throws Exception {}
 
-	private TestingFatalErrorHandler testingFatalErrorHandler;
+    @After
+    public void after() throws Exception {
+        if (resourceManagerService != null) {
+            resourceManagerService.rethrowFatalErrorIfAny();
+            resourceManagerService.cleanUp();
+        }
+    }
 
-	private TestingResourceManager resourceManager;
+    @AfterClass
+    public static void tearDownClass() throws Exception {
+        if (rpcService != null) {
+            RpcUtils.terminateRpcService(rpcService);
+        }
+    }
 
-	@BeforeClass
-	public static void setupClass() {
-		rpcService = new TestingRpcService();
-	}
+    @Test
+    public void testClusterPartitionReportHandling() throws Exception {
+        final CompletableFuture<Collection<IntermediateDataSetID>> clusterPartitionReleaseFuture =
+                new CompletableFuture<>();
+        runTest(
+                builder ->
+                        builder.setReleaseClusterPartitionsConsumer(
+                                clusterPartitionReleaseFuture::complete),
+                (resourceManagerGateway, taskManagerId1, ignored) -> {
+                    IntermediateDataSetID dataSetID = new IntermediateDataSetID();
+                    ResultPartitionID resultPartitionID = new ResultPartitionID();
 
-	@Before
-	public void setup() throws Exception {
-		highAvailabilityServices = new TestingHighAvailabilityServices();
-		resourceManagerLeaderElectionService = new TestingLeaderElectionService();
-		highAvailabilityServices.setResourceManagerLeaderElectionService(resourceManagerLeaderElectionService);
-		testingFatalErrorHandler = new TestingFatalErrorHandler();
-	}
+                    resourceManagerGateway.heartbeatFromTaskManager(
+                            taskManagerId1,
+                            createTaskExecutorHeartbeatPayload(
+                                    dataSetID, 2, resultPartitionID, new ResultPartitionID()));
 
-	@After
-	public void after() throws Exception {
-		if (resourceManager != null) {
-			RpcUtils.terminateRpcEndpoint(resourceManager, TIMEOUT);
-		}
+                    // send a heartbeat containing 1 partition less -> partition loss -> should
+                    // result in partition release
+                    resourceManagerGateway.heartbeatFromTaskManager(
+                            taskManagerId1,
+                            createTaskExecutorHeartbeatPayload(dataSetID, 2, resultPartitionID));
 
-		if (highAvailabilityServices != null) {
-			highAvailabilityServices.closeAndCleanupAllData();
-		}
+                    Collection<IntermediateDataSetID> intermediateDataSetIDS =
+                            clusterPartitionReleaseFuture.get();
+                    assertThat(intermediateDataSetIDS, contains(dataSetID));
+                });
+    }
 
-		if (testingFatalErrorHandler.hasExceptionOccurred()) {
-			testingFatalErrorHandler.rethrowError();
-		}
-	}
+    @Test
+    public void testTaskExecutorShutdownHandling() throws Exception {
+        final CompletableFuture<Collection<IntermediateDataSetID>> clusterPartitionReleaseFuture =
+                new CompletableFuture<>();
+        runTest(
+                builder ->
+                        builder.setReleaseClusterPartitionsConsumer(
+                                clusterPartitionReleaseFuture::complete),
+                (resourceManagerGateway, taskManagerId1, taskManagerId2) -> {
+                    IntermediateDataSetID dataSetID = new IntermediateDataSetID();
 
-	@AfterClass
-	public static void tearDownClass() throws Exception {
-		if (rpcService != null) {
-			RpcUtils.terminateRpcServices(TIMEOUT, rpcService);
-		}
-	}
+                    resourceManagerGateway.heartbeatFromTaskManager(
+                            taskManagerId1,
+                            createTaskExecutorHeartbeatPayload(
+                                    dataSetID, 2, new ResultPartitionID()));
 
-	@Test
-	public void testClusterPartitionReportHandling() throws Exception {
-		final CompletableFuture<Collection<IntermediateDataSetID>> clusterPartitionReleaseFuture = new CompletableFuture<>();
-		runTest(
-			builder -> builder.setReleaseClusterPartitionsConsumer(clusterPartitionReleaseFuture::complete),
-			(resourceManagerGateway, taskManagerId1, ignored) -> {
-				IntermediateDataSetID dataSetID = new IntermediateDataSetID();
-				ResultPartitionID resultPartitionID = new ResultPartitionID();
+                    // we need a partition on another task executor so that there's something to
+                    // release when one task executor goes down
+                    resourceManagerGateway.heartbeatFromTaskManager(
+                            taskManagerId2,
+                            createTaskExecutorHeartbeatPayload(
+                                    dataSetID, 2, new ResultPartitionID()));
 
-				resourceManagerGateway.heartbeatFromTaskManager(
-					taskManagerId1,
-					createTaskExecutorHeartbeatPayload(dataSetID, 2, resultPartitionID, new ResultPartitionID()));
+                    resourceManagerGateway.disconnectTaskManager(
+                            taskManagerId2, new RuntimeException("test exception"));
+                    Collection<IntermediateDataSetID> intermediateDataSetIDS =
+                            clusterPartitionReleaseFuture.get();
+                    assertThat(intermediateDataSetIDS, contains(dataSetID));
+                });
+    }
 
-				// send a heartbeat containing 1 partition less -> partition loss -> should result in partition release
-				resourceManagerGateway.heartbeatFromTaskManager(
-					taskManagerId1,
-					createTaskExecutorHeartbeatPayload(dataSetID, 2, resultPartitionID));
+    private void runTest(TaskExecutorSetup taskExecutorBuilderSetup, TestAction testAction)
+            throws Exception {
+        final ResourceManagerGateway resourceManagerGateway = createAndStartResourceManager();
 
-				Collection<IntermediateDataSetID> intermediateDataSetIDS = clusterPartitionReleaseFuture.get(TIMEOUT.toMilliseconds(), TimeUnit.MILLISECONDS);
-				assertThat(intermediateDataSetIDS, contains(dataSetID));
-			});
-	}
+        TestingTaskExecutorGatewayBuilder testingTaskExecutorGateway1Builder =
+                new TestingTaskExecutorGatewayBuilder();
+        taskExecutorBuilderSetup.accept(testingTaskExecutorGateway1Builder);
+        final TaskExecutorGateway taskExecutorGateway1 =
+                testingTaskExecutorGateway1Builder
+                        .setAddress(UUID.randomUUID().toString())
+                        .createTestingTaskExecutorGateway();
+        rpcService.registerGateway(taskExecutorGateway1.getAddress(), taskExecutorGateway1);
 
-	@Test
-	public void testTaskExecutorShutdownHandling() throws Exception {
-		final CompletableFuture<Collection<IntermediateDataSetID>> clusterPartitionReleaseFuture = new CompletableFuture<>();
-		runTest(
-			builder -> builder.setReleaseClusterPartitionsConsumer(clusterPartitionReleaseFuture::complete),
-			(resourceManagerGateway, taskManagerId1, taskManagerId2) -> {
-				IntermediateDataSetID dataSetID = new IntermediateDataSetID();
+        final TaskExecutorGateway taskExecutorGateway2 =
+                new TestingTaskExecutorGatewayBuilder()
+                        .setAddress(UUID.randomUUID().toString())
+                        .createTestingTaskExecutorGateway();
+        rpcService.registerGateway(taskExecutorGateway2.getAddress(), taskExecutorGateway2);
 
-				resourceManagerGateway.heartbeatFromTaskManager(
-					taskManagerId1,
-					createTaskExecutorHeartbeatPayload(dataSetID, 2, new ResultPartitionID()));
+        final ResourceID taskManagerId1 = ResourceID.generate();
+        final ResourceID taskManagerId2 = ResourceID.generate();
+        registerTaskExecutor(
+                resourceManagerGateway, taskManagerId1, taskExecutorGateway1.getAddress());
+        registerTaskExecutor(
+                resourceManagerGateway, taskManagerId2, taskExecutorGateway2.getAddress());
 
-				// we need a partition on another task executor so that there's something to release when one task executor goes down
-				resourceManagerGateway.heartbeatFromTaskManager(
-					taskManagerId2,
-					createTaskExecutorHeartbeatPayload(dataSetID, 2, new ResultPartitionID()));
+        testAction.accept(resourceManagerGateway, taskManagerId1, taskManagerId2);
+    }
 
-				resourceManagerGateway.disconnectTaskManager(taskManagerId2, new RuntimeException("test exception"));
-				Collection<IntermediateDataSetID> intermediateDataSetIDS = clusterPartitionReleaseFuture.get(TIMEOUT.toMilliseconds(), TimeUnit.MILLISECONDS);
-				assertThat(intermediateDataSetIDS, contains(dataSetID));
-			});
-	}
+    public static void registerTaskExecutor(
+            ResourceManagerGateway resourceManagerGateway,
+            ResourceID taskExecutorId,
+            String taskExecutorAddress)
+            throws Exception {
+        final TaskExecutorRegistration taskExecutorRegistration =
+                new TaskExecutorRegistration(
+                        taskExecutorAddress,
+                        taskExecutorId,
+                        1234,
+                        23456,
+                        new HardwareDescription(42, 1337L, 1337L, 0L),
+                        new TaskExecutorMemoryConfiguration(
+                                1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L),
+                        ResourceProfile.ZERO,
+                        ResourceProfile.ZERO,
+                        taskExecutorAddress);
+        final CompletableFuture<RegistrationResponse> registrationFuture =
+                resourceManagerGateway.registerTaskExecutor(
+                        taskExecutorRegistration, TestingUtils.TIMEOUT);
 
-	private void runTest(TaskExecutorSetup taskExecutorBuilderSetup, TestAction testAction) throws Exception {
-		final ResourceManagerGateway resourceManagerGateway = createAndStartResourceManager();
+        assertThat(registrationFuture.get(), instanceOf(RegistrationResponse.Success.class));
+    }
 
-		TestingTaskExecutorGatewayBuilder testingTaskExecutorGateway1Builder = new TestingTaskExecutorGatewayBuilder();
-		taskExecutorBuilderSetup.accept(testingTaskExecutorGateway1Builder);
-		final TaskExecutorGateway taskExecutorGateway1 = testingTaskExecutorGateway1Builder
-			.setAddress(UUID.randomUUID().toString())
-			.createTestingTaskExecutorGateway();
-		rpcService.registerGateway(taskExecutorGateway1.getAddress(), taskExecutorGateway1);
+    private ResourceManagerGateway createAndStartResourceManager() throws Exception {
+        final TestingLeaderElectionService leaderElectionService =
+                new TestingLeaderElectionService();
 
-		final TaskExecutorGateway taskExecutorGateway2 = new TestingTaskExecutorGatewayBuilder()
-			.setAddress(UUID.randomUUID().toString())
-			.createTestingTaskExecutorGateway();
-		rpcService.registerGateway(taskExecutorGateway2.getAddress(), taskExecutorGateway2);
+        resourceManagerService =
+                TestingResourceManagerService.newBuilder()
+                        .setRpcService(rpcService)
+                        .setRmLeaderElectionService(leaderElectionService)
+                        .build();
+        resourceManagerService.start();
 
-		final ResourceID taskManagerId1 = ResourceID.generate();
-		final ResourceID taskManagerId2 = ResourceID.generate();
-		registerTaskExecutor(resourceManagerGateway, taskManagerId1, taskExecutorGateway1.getAddress());
-		registerTaskExecutor(resourceManagerGateway, taskManagerId2, taskExecutorGateway2.getAddress());
+        // first make the ResourceManager the leader
+        resourceManagerService.isLeader(UUID.randomUUID()).join();
 
-		testAction.accept(resourceManagerGateway, taskManagerId1, taskManagerId2);
-	}
+        return resourceManagerService
+                .getResourceManagerGateway()
+                .orElseThrow(
+                        () -> new AssertionError("RM not available after confirming leadership."));
+    }
 
-	public static void registerTaskExecutor(ResourceManagerGateway resourceManagerGateway, ResourceID taskExecutorId, String taskExecutorAddress) throws Exception {
-		final TaskExecutorRegistration taskExecutorRegistration = new TaskExecutorRegistration(
-			taskExecutorAddress,
-			taskExecutorId,
-			1234,
-			new HardwareDescription(42, 1337L, 1337L, 0L),
-			ResourceProfile.ZERO,
-			ResourceProfile.ZERO);
-		final CompletableFuture<RegistrationResponse> registrationFuture = resourceManagerGateway.registerTaskExecutor(
-			taskExecutorRegistration,
-			TestingUtils.TIMEOUT());
+    private static TaskExecutorHeartbeatPayload createTaskExecutorHeartbeatPayload(
+            IntermediateDataSetID dataSetId,
+            int numTotalPartitions,
+            ResultPartitionID... partitionIds) {
 
-		assertThat(registrationFuture.get(), instanceOf(RegistrationResponse.Success.class));
-	}
+        final Map<ResultPartitionID, ShuffleDescriptor> shuffleDescriptors =
+                Arrays.stream(partitionIds)
+                        .map(TestingShuffleDescriptor::new)
+                        .collect(
+                                Collectors.toMap(
+                                        TestingShuffleDescriptor::getResultPartitionID, d -> d));
 
-	private ResourceManagerGateway createAndStartResourceManager() throws Exception {
-		final SlotManager slotManager = SlotManagerBuilder.newBuilder()
-			.setScheduledExecutor(rpcService.getScheduledExecutor())
-			.build();
-		final JobLeaderIdService jobLeaderIdService = new JobLeaderIdService(
-			highAvailabilityServices,
-			rpcService.getScheduledExecutor(),
-			TestingUtils.infiniteTime());
+        return new TaskExecutorHeartbeatPayload(
+                new SlotReport(),
+                new ClusterPartitionReport(
+                        Collections.singletonList(
+                                new ClusterPartitionReport.ClusterPartitionReportEntry(
+                                        dataSetId, numTotalPartitions, shuffleDescriptors))));
+    }
 
-		final TestingResourceManager resourceManager = new TestingResourceManager(
-			rpcService,
-			ResourceID.generate(),
-			highAvailabilityServices,
-			new HeartbeatServices(100000L, 1000000L),
-			slotManager,
-			ResourceManagerPartitionTrackerImpl::new,
-			jobLeaderIdService,
-			testingFatalErrorHandler,
-			UnregisteredMetricGroups.createUnregisteredResourceManagerMetricGroup());
+    @FunctionalInterface
+    private interface TaskExecutorSetup {
+        void accept(TestingTaskExecutorGatewayBuilder taskExecutorGatewayBuilder) throws Exception;
+    }
 
-		resourceManager.start();
+    @FunctionalInterface
+    private interface TestAction {
+        void accept(
+                ResourceManagerGateway resourceManagerGateway,
+                ResourceID taskExecutorId1,
+                ResourceID taskExecutorId2)
+                throws Exception;
+    }
 
-		// first make the ResourceManager the leader
-		resourceManagerLeaderElectionService.isLeader(ResourceManagerId.generate().toUUID()).get();
+    private static class TestingShuffleDescriptor implements ShuffleDescriptor {
 
-		this.resourceManager = resourceManager;
+        private final ResultPartitionID resultPartitionID;
 
-		return resourceManager.getSelfGateway(ResourceManagerGateway.class);
-	}
+        private TestingShuffleDescriptor(ResultPartitionID resultPartitionID) {
+            this.resultPartitionID = resultPartitionID;
+        }
 
-	private static TaskExecutorHeartbeatPayload createTaskExecutorHeartbeatPayload(IntermediateDataSetID dataSetId, int numTotalPartitions, ResultPartitionID... partitionIds) {
-		return new TaskExecutorHeartbeatPayload(
-			new SlotReport(),
-			new ClusterPartitionReport(Collections.singletonList(
-				new ClusterPartitionReport.ClusterPartitionReportEntry(dataSetId, new HashSet<>(Arrays.asList(partitionIds)), numTotalPartitions)
-			)));
-	}
+        @Override
+        public ResultPartitionID getResultPartitionID() {
+            return resultPartitionID;
+        }
 
-	@FunctionalInterface
-	private interface TaskExecutorSetup {
-		void accept(TestingTaskExecutorGatewayBuilder taskExecutorGatewayBuilder) throws Exception;
-	}
-
-	@FunctionalInterface
-	private interface TestAction {
-		void accept(ResourceManagerGateway resourceManagerGateway, ResourceID taskExecutorId1, ResourceID taskExecutorId2) throws Exception;
-	}
+        @Override
+        public Optional<ResourceID> storesLocalResourcesOn() {
+            return Optional.empty();
+        }
+    }
 }

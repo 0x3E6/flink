@@ -23,6 +23,7 @@ import org.apache.flink.runtime.io.network.NetworkClientHandler;
 import org.apache.flink.runtime.io.network.PartitionRequestClient;
 import org.apache.flink.runtime.io.network.netty.exception.RemoteTransportException;
 import org.apache.flink.runtime.io.network.partition.consumer.RemoteInputChannel;
+import org.apache.flink.util.ExceptionUtils;
 
 import org.apache.flink.shaded.netty4.io.netty.channel.Channel;
 
@@ -31,11 +32,9 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Factory for {@link NettyPartitionRequestClient} instances.
@@ -44,111 +43,165 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * instances.
  */
 class PartitionRequestClientFactory {
-	private static final Logger LOG = LoggerFactory.getLogger(PartitionRequestClientFactory.class);
+    private static final Logger LOG = LoggerFactory.getLogger(PartitionRequestClientFactory.class);
 
-	private final NettyClient nettyClient;
+    private final NettyClient nettyClient;
 
-	private final int retryNumber;
+    private final int retryNumber;
 
-	private final ConcurrentMap<ConnectionID, CompletableFuture<NettyPartitionRequestClient>> clients = new ConcurrentHashMap<>();
+    private final int maxNumberOfConnections;
 
-	PartitionRequestClientFactory(NettyClient nettyClient) {
-		this(nettyClient, 0);
-	}
+    private final ConcurrentMap<ConnectionID, CompletableFuture<NettyPartitionRequestClient>>
+            clients = new ConcurrentHashMap<>();
 
-	PartitionRequestClientFactory(NettyClient nettyClient, int retryNumber) {
-		this.nettyClient = nettyClient;
-		this.retryNumber = retryNumber;
-	}
+    private final boolean connectionReuseEnabled;
 
-	/**
-	 * Atomically establishes a TCP connection to the given remote address and
-	 * creates a {@link NettyPartitionRequestClient} instance for this connection.
-	 */
-	NettyPartitionRequestClient createPartitionRequestClient(ConnectionID connectionId) throws IOException, InterruptedException {
-		while (true) {
-			AtomicBoolean isTheFirstOne = new AtomicBoolean(false);
-			CompletableFuture<NettyPartitionRequestClient> clientFuture = clients.computeIfAbsent(connectionId, unused -> {
-				isTheFirstOne.set(true);
-				return new CompletableFuture<>();
-			});
-			if (isTheFirstOne.get()) {
-				clientFuture.complete(connectWithRetries(connectionId));
-			}
+    PartitionRequestClientFactory(NettyClient nettyClient, boolean connectionReuseEnabled) {
+        this(nettyClient, 0, 1, connectionReuseEnabled);
+    }
 
-			final NettyPartitionRequestClient client;
-			try {
-				client = clientFuture.get();
-			} catch (ExecutionException e) {
-				throw new IOException(e);
-			}
-			// Make sure to increment the reference count before handing a client
-			// out to ensure correct bookkeeping for channel closing.
-			if (client.incrementReferenceCounter()) {
-				return client;
-			} else {
-				destroyPartitionRequestClient(connectionId, client);
-			}
-		}
-	}
+    PartitionRequestClientFactory(
+            NettyClient nettyClient,
+            int retryNumber,
+            int maxNumberOfConnections,
+            boolean connectionReuseEnabled) {
+        this.nettyClient = nettyClient;
+        this.retryNumber = retryNumber;
+        this.maxNumberOfConnections = maxNumberOfConnections;
+        this.connectionReuseEnabled = connectionReuseEnabled;
+    }
 
-	private NettyPartitionRequestClient connectWithRetries(ConnectionID connectionId) {
-		int tried = 0;
-		while (true) {
-			try {
-				return connect(connectionId);
-			} catch (RemoteTransportException e) {
-				tried++;
-				LOG.error("Failed {} times to connect to {}", tried, connectionId.getAddress(), e);
-				if (tried > retryNumber) {
-					throw new CompletionException(e);
-				}
-			}
-		}
-	}
+    /**
+     * Atomically establishes a TCP connection to the given remote address and creates a {@link
+     * NettyPartitionRequestClient} instance for this connection.
+     */
+    NettyPartitionRequestClient createPartitionRequestClient(ConnectionID connectionId)
+            throws IOException, InterruptedException {
+        // We map the input ConnectionID to a new value to restrict the number of tcp connections
+        connectionId =
+                new ConnectionID(
+                        connectionId.getResourceID(),
+                        connectionId.getAddress(),
+                        connectionId.getConnectionIndex() % maxNumberOfConnections);
+        while (true) {
+            final CompletableFuture<NettyPartitionRequestClient> newClientFuture =
+                    new CompletableFuture<>();
 
-	private NettyPartitionRequestClient connect(ConnectionID connectionId) throws RemoteTransportException {
-		try {
-			Channel channel = nettyClient.connect(connectionId.getAddress()).await().channel();
-			NetworkClientHandler clientHandler = channel.pipeline().get(NetworkClientHandler.class);
-			return new NettyPartitionRequestClient(channel, clientHandler, connectionId, this);
-		} catch (Exception e) {
-			throw new RemoteTransportException(
-				"Connecting to remote task manager '" + connectionId.getAddress() +
-					"' has failed. This might indicate that the remote task " +
-					"manager has been lost.",
-				connectionId.getAddress(), e);
-		}
-	}
+            final CompletableFuture<NettyPartitionRequestClient> clientFuture =
+                    clients.putIfAbsent(connectionId, newClientFuture);
 
-	void closeOpenChannelConnections(ConnectionID connectionId) {
-		CompletableFuture<NettyPartitionRequestClient> entry = clients.get(connectionId);
+            final NettyPartitionRequestClient client;
 
-		if (entry != null && !entry.isDone()) {
-			entry.thenAccept(client -> {
-				if (client.disposeIfNotUsed()) {
-					clients.remove(connectionId, entry);
-				}
-			});
-		}
-	}
+            if (clientFuture == null) {
+                try {
+                    client = connectWithRetries(connectionId);
+                } catch (Throwable e) {
+                    newClientFuture.completeExceptionally(
+                            new IOException("Could not create Netty client.", e));
+                    clients.remove(connectionId, newClientFuture);
+                    throw e;
+                }
 
-	int getNumberOfActiveClients() {
-		return clients.size();
-	}
+                newClientFuture.complete(client);
+            } else {
+                try {
+                    client = clientFuture.get();
+                } catch (ExecutionException e) {
+                    ExceptionUtils.rethrowIOException(ExceptionUtils.stripExecutionException(e));
+                    return null;
+                }
+            }
 
-	/**
-	 * Removes the client for the given {@link ConnectionID}.
-	 */
-	void destroyPartitionRequestClient(ConnectionID connectionId, PartitionRequestClient client) {
-		final CompletableFuture<NettyPartitionRequestClient> future = clients.get(connectionId);
-		if (future != null && future.isDone()) {
-			future.thenAccept(futureClient -> {
-				if (client.equals(futureClient)) {
-					clients.remove(connectionId, future);
-				}
-			});
-		}
-	}
+            // Make sure to increment the reference count before handing a client
+            // out to ensure correct bookkeeping for channel closing.
+            if (client.validateClientAndIncrementReferenceCounter()) {
+                return client;
+            } else if (client.canBeDisposed()) {
+                client.closeConnection();
+            } else {
+                destroyPartitionRequestClient(connectionId, client);
+            }
+        }
+    }
 
+    public boolean isConnectionReuseEnabled() {
+        return connectionReuseEnabled;
+    }
+
+    private NettyPartitionRequestClient connectWithRetries(ConnectionID connectionId)
+            throws InterruptedException, RemoteTransportException {
+        int tried = 0;
+        while (true) {
+            try {
+                return connect(connectionId);
+            } catch (RemoteTransportException e) {
+                tried++;
+                if (tried > retryNumber) {
+                    LOG.warn("Failed to connect to {}. Giving up.", connectionId.getAddress(), e);
+                    throw e;
+                } else {
+                    LOG.warn(
+                            "Failed {} times to connect to {}. Retrying.",
+                            tried,
+                            connectionId.getAddress(),
+                            e);
+                }
+            }
+        }
+    }
+
+    private NettyPartitionRequestClient connect(ConnectionID connectionId)
+            throws RemoteTransportException, InterruptedException {
+        try {
+            // It's important to use `sync` here because it waits for this future until it is
+            // done, and rethrows the cause of the failure if this future failed. `await` only
+            // waits for this future to be completed, without throwing the error.
+            Channel channel = nettyClient.connect(connectionId.getAddress()).sync().channel();
+            NetworkClientHandler clientHandler = channel.pipeline().get(NetworkClientHandler.class);
+            return new NettyPartitionRequestClient(channel, clientHandler, connectionId, this);
+        } catch (InterruptedException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RemoteTransportException(
+                    "Connecting to remote task manager '"
+                            + connectionId.getAddress()
+                            + " [ "
+                            + connectionId.getResourceID().getStringWithMetadata()
+                            + " ] "
+                            + "' has failed. This might indicate that the remote task "
+                            + "manager has been lost.",
+                    connectionId.getAddress(),
+                    e);
+        }
+    }
+
+    void closeOpenChannelConnections(ConnectionID connectionId) {
+        CompletableFuture<NettyPartitionRequestClient> entry = clients.get(connectionId);
+
+        if (entry != null && !entry.isDone()) {
+            entry.thenAccept(
+                    client -> {
+                        if (client.canBeDisposed()) {
+                            clients.remove(connectionId, entry);
+                        }
+                    });
+        }
+    }
+
+    int getNumberOfActiveClients() {
+        return clients.size();
+    }
+
+    /** Removes the client for the given {@link ConnectionID}. */
+    void destroyPartitionRequestClient(ConnectionID connectionId, PartitionRequestClient client) {
+        final CompletableFuture<NettyPartitionRequestClient> future = clients.get(connectionId);
+        if (future != null && future.isDone()) {
+            future.thenAccept(
+                    futureClient -> {
+                        if (client.equals(futureClient)) {
+                            clients.remove(connectionId, future);
+                        }
+                    });
+        }
+    }
 }

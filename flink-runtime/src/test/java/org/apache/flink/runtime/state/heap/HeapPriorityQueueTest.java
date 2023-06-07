@@ -19,81 +19,78 @@ package org.apache.flink.runtime.state.heap;
 
 import org.apache.flink.runtime.state.InternalPriorityQueueTestBase;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 
-/**
- * Test for {@link HeapPriorityQueue}.
- */
-public class HeapPriorityQueueTest extends InternalPriorityQueueTestBase {
+import static org.assertj.core.api.Assertions.assertThat;
 
-	@Test
-	public void testClear() {
-		HeapPriorityQueue<TestElement> priorityQueueSet =
-			newPriorityQueue(1);
+/** Test for {@link HeapPriorityQueue}. */
+class HeapPriorityQueueTest extends InternalPriorityQueueTestBase {
 
-		int count = 10;
-		HashSet<TestElement> checkSet = new HashSet<>(count);
-		insertRandomElements(priorityQueueSet, checkSet, count);
-		Assert.assertEquals(count, priorityQueueSet.size());
-		priorityQueueSet.clear();
-		Assert.assertEquals(0, priorityQueueSet.size());
-	}
+    @Test
+    void testClear() {
+        HeapPriorityQueue<TestElement> priorityQueueSet = newPriorityQueue(1);
 
-	@Test
-	@SuppressWarnings("unchecked")
-	public void testToArray() {
+        int count = 10;
+        HashSet<TestElement> checkSet = new HashSet<>(count);
+        insertRandomElements(priorityQueueSet, checkSet, count);
+        assertThat(priorityQueueSet.size()).isEqualTo(count);
+        priorityQueueSet.clear();
+        assertThat(priorityQueueSet.size()).isZero();
+    }
 
-		final int testSize = 10;
+    @Test
+    @SuppressWarnings("unchecked")
+    void testToArray() {
 
-		List<TestElement[]> tests = new ArrayList<>(2);
-		tests.add(new TestElement[0]);
-		tests.add(new TestElement[testSize]);
-		tests.add(new TestElement[testSize + 1]);
+        final int testSize = 10;
 
-		for (TestElement[] testArray : tests) {
+        List<TestElement[]> tests = new ArrayList<>(2);
+        tests.add(new TestElement[0]);
+        tests.add(new TestElement[testSize]);
+        tests.add(new TestElement[testSize + 1]);
 
-			Arrays.fill(testArray, new TestElement(42L, 4711L));
+        for (TestElement[] testArray : tests) {
 
-			HashSet<TestElement> checkSet = new HashSet<>(testSize);
+            Arrays.fill(testArray, new TestElement(42L, 4711L));
 
-			HeapPriorityQueue<TestElement> timerPriorityQueue =
-				newPriorityQueue(1);
+            HashSet<TestElement> checkSet = new HashSet<>(testSize);
 
-			Assert.assertEquals(testArray.length, timerPriorityQueue.toArray(testArray).length);
+            HeapPriorityQueue<TestElement> timerPriorityQueue = newPriorityQueue(1);
 
-			insertRandomElements(timerPriorityQueue, checkSet, testSize);
+            assertThat(testArray).hasSameSizeAs(timerPriorityQueue.toArray(testArray));
 
-			TestElement[] toArray = timerPriorityQueue.toArray(testArray);
+            insertRandomElements(timerPriorityQueue, checkSet, testSize);
 
-			Assert.assertEquals((testArray.length >= testSize), (testArray == toArray));
+            TestElement[] toArray = timerPriorityQueue.toArray(testArray);
 
-			int count = 0;
-			for (TestElement o : toArray) {
-				if (o == null) {
-					break;
-				}
-				Assert.assertTrue(checkSet.remove(o));
-				++count;
-			}
+            assertThat((testArray.length >= testSize)).isEqualTo((testArray == toArray));
 
-			Assert.assertEquals(timerPriorityQueue.size(), count);
-			Assert.assertTrue(checkSet.isEmpty());
-		}
-	}
+            int count = 0;
+            for (TestElement o : toArray) {
+                if (o == null) {
+                    break;
+                }
+                assertThat(checkSet.remove(o)).isTrue();
+                ++count;
+            }
 
-	@Override
-	protected HeapPriorityQueue<TestElement> newPriorityQueue(int initialCapacity) {
-		return new HeapPriorityQueue<>(TEST_ELEMENT_PRIORITY_COMPARATOR, initialCapacity);
-	}
+            assertThat(timerPriorityQueue.size()).isEqualTo(count);
+            assertThat(checkSet).isEmpty();
+        }
+    }
 
-	@Override
-	protected boolean testSetSemanticsAgainstDuplicateElements() {
-		return false;
-	}
+    @Override
+    protected HeapPriorityQueue<TestElement> newPriorityQueue(int initialCapacity) {
+        return new HeapPriorityQueue<>(TEST_ELEMENT_PRIORITY_COMPARATOR, initialCapacity);
+    }
+
+    @Override
+    protected boolean testSetSemanticsAgainstDuplicateElements() {
+        return false;
+    }
 }

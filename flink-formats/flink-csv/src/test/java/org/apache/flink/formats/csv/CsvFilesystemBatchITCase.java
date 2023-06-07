@@ -19,12 +19,13 @@
 package org.apache.flink.formats.csv;
 
 import org.apache.flink.table.planner.runtime.batch.sql.BatchFileSystemITCaseBase;
+import org.apache.flink.testutils.junit.extensions.parameterized.NoOpTestExtension;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.FileUtils;
 
-import org.junit.Test;
-import org.junit.experimental.runners.Enclosed;
-import org.junit.runner.RunWith;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.io.File;
 import java.net.URI;
@@ -32,72 +33,89 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-/**
- * ITCase to test csv format for {@link CsvFileSystemFormatFactory} in batch mode.
- */
-@RunWith(Enclosed.class)
-public class CsvFilesystemBatchITCase {
+/** ITCase to test csv format for {@link CsvFileFormatFactory} in batch mode. */
+@ExtendWith(NoOpTestExtension.class)
+class CsvFilesystemBatchITCase {
 
-	/**
-	 * General IT cases for CsvRowDataFilesystem in batch mode.
-	 */
-	public static class GeneralCsvFilesystemBatchITCase extends BatchFileSystemITCaseBase {
+    /** General IT cases for CsvRowDataFilesystem in batch mode. */
+    @Nested
+    class GeneralCsvFilesystemBatchITCase extends BatchFileSystemITCaseBase {
 
-		@Override
-		public String[] formatProperties() {
-			List<String> ret = new ArrayList<>();
-			ret.add("'format'='csv'");
-			ret.add("'csv.field-delimiter'=';'");
-			ret.add("'csv.quote-character'='#'");
-			return ret.toArray(new String[0]);
-		}
-	}
+        @Override
+        public boolean supportsReadingMetadata() {
+            return false;
+        }
 
-	/**
-	 * Enriched IT cases that including testParseError and testEscapeChar for CsvRowDataFilesystem in batch mode.
-	 */
-	public static class EnrichedCsvFilesystemBatchITCase extends BatchFileSystemITCaseBase {
+        @Override
+        public String[] formatProperties() {
+            List<String> ret = new ArrayList<>();
+            ret.add("'format'='csv'");
+            ret.add("'csv.field-delimiter'=';'");
+            ret.add("'csv.quote-character'='#'");
+            return ret.toArray(new String[0]);
+        }
+    }
 
-		@Override
-		public String[] formatProperties() {
-			List<String> ret = new ArrayList<>();
-			ret.add("'format'='csv'");
-			ret.add("'csv.ignore-parse-errors'='true'");
-			ret.add("'csv.escape-character'='\t'");
-			return ret.toArray(new String[0]);
-		}
+    /**
+     * Enriched IT cases that including testParseError and testEscapeChar for CsvRowDataFilesystem
+     * in batch mode.
+     */
+    @Nested
+    class EnrichedCsvFilesystemBatchITCase extends BatchFileSystemITCaseBase {
 
-		@Test
-		public void testParseError() throws Exception {
-			String path = new URI(resultPath()).getPath();
-			new File(path).mkdirs();
-			File file = new File(path, "test_file");
-			file.createNewFile();
-			FileUtils.writeFileUtf8(file,
-				"x5,5,1,1\n" +
-					"x5,5,2,2,2\n" +
-					"x5,5,1,1");
+        @Override
+        public boolean supportsReadingMetadata() {
+            return false;
+        }
 
-			check("select * from nonPartitionedTable",
-				Arrays.asList(
-					Row.of("x5,5,1,1"),
-					Row.of("x5,5,1,1")));
-		}
+        @Override
+        public String[] formatProperties() {
+            List<String> ret = new ArrayList<>();
+            ret.add("'format'='csv'");
+            ret.add("'csv.ignore-parse-errors'='true'");
+            ret.add("'csv.escape-character'='\t'");
+            return ret.toArray(new String[0]);
+        }
 
-		@Test
-		public void testEscapeChar() throws Exception {
-			String path = new URI(resultPath()).getPath();
-			new File(path).mkdirs();
-			File file = new File(path, "test_file");
-			file.createNewFile();
-			FileUtils.writeFileUtf8(file,
-				"x5,\t\n5,1,1\n" +
-					"x5,\t5,2,2");
+        @Test
+        void testParseError() throws Exception {
+            String path = new URI(resultPath()).getPath();
+            new File(path).mkdirs();
+            File file = new File(path, "test_file");
+            file.createNewFile();
+            FileUtils.writeFileUtf8(
+                    file, "x5,5,1,1\n" + "x5,5,2,2,2\n" + "x5,5,3,3,3,3\n" + "x5,5,1,1");
 
-			check("select * from nonPartitionedTable",
-				Arrays.asList(
-					Row.of("x5,5,1,1"),
-					Row.of("x5,5,2,2")));
-		}
-	}
+            check(
+                    "select * from nonPartitionedTable",
+                    Arrays.asList(Row.of("x5", 5, 1, 1), Row.of("x5", 5, 1, 1)));
+        }
+
+        @Test
+        void testParseErrorLast() throws Exception {
+            String path = new URI(resultPath()).getPath();
+            new File(path).mkdirs();
+            File file = new File(path, "test_file");
+            file.createNewFile();
+            FileUtils.writeFileUtf8(
+                    file, "x5,5,1,1\n" + "x5,5,2,2,2\n" + "x5,5,1,1\n" + "x5,5,3,3,3,3\n");
+
+            check(
+                    "select * from nonPartitionedTable",
+                    Arrays.asList(Row.of("x5", 5, 1, 1), Row.of("x5", 5, 1, 1)));
+        }
+
+        @Test
+        void testEscapeChar() throws Exception {
+            String path = new URI(resultPath()).getPath();
+            new File(path).mkdirs();
+            File file = new File(path, "test_file");
+            file.createNewFile();
+            FileUtils.writeFileUtf8(file, "x5,\t\n5,1,1\n" + "x5,\t5,2,2");
+
+            check(
+                    "select * from nonPartitionedTable",
+                    Arrays.asList(Row.of("x5", 5, 1, 1), Row.of("x5", 5, 2, 2)));
+        }
+    }
 }

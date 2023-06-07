@@ -29,13 +29,15 @@ import io.fabric8.kubernetes.api.model.ContainerPort;
 import io.fabric8.kubernetes.api.model.ContainerPortBuilder;
 import io.fabric8.kubernetes.api.model.EnvVar;
 import io.fabric8.kubernetes.api.model.LocalObjectReference;
+import io.fabric8.kubernetes.api.model.NodeSelectorRequirement;
+import io.fabric8.kubernetes.api.model.NodeSelectorTerm;
 import io.fabric8.kubernetes.api.model.Pod;
 import io.fabric8.kubernetes.api.model.Quantity;
 import io.fabric8.kubernetes.api.model.ResourceRequirements;
 import io.fabric8.kubernetes.api.model.Toleration;
-import org.hamcrest.Matchers;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -43,174 +45,249 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-import static org.hamcrest.Matchers.equalTo;
-import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * General tests for the {@link InitJobManagerDecorator}.
- */
-public class InitTaskManagerDecoratorTest extends KubernetesTaskManagerTestBase {
+/** General tests for the {@link InitJobManagerDecorator}. */
+class InitTaskManagerDecoratorTest extends KubernetesTaskManagerTestBase {
 
-	private static final List<String> IMAGE_PULL_SECRETS = Arrays.asList("s1", "s2", "s3");
-	private static final Map<String, String> ANNOTATIONS = new HashMap<String, String>() {
-		{
-			put("a1", "v1");
-			put("a2", "v2");
-		}
-	};
-	private static final String TOLERATION_STRING = "key:key1,operator:Equal,value:value1,effect:NoSchedule;" +
-		"KEY:key2,operator:Exists,Effect:NoExecute,tolerationSeconds:6000";
-	private static final List<Toleration> TOLERATION = Arrays.asList(
-		new Toleration("NoSchedule", "key1", "Equal", null, "value1"),
-		new Toleration("NoExecute", "key2", "Exists", 6000L, null));
+    private static final String SERVICE_ACCOUNT_NAME = "service-test";
+    private static final List<String> IMAGE_PULL_SECRETS = Arrays.asList("s1", "s2", "s3");
+    private static final Map<String, String> ANNOTATIONS =
+            new HashMap<String, String>() {
+                {
+                    put("a1", "v1");
+                    put("a2", "v2");
+                }
+            };
+    private static final String TOLERATION_STRING =
+            "key:key1,operator:Equal,value:value1,effect:NoSchedule;"
+                    + "KEY:key2,operator:Exists,Effect:NoExecute,tolerationSeconds:6000";
+    private static final List<Toleration> TOLERATION =
+            Arrays.asList(
+                    new Toleration("NoSchedule", "key1", "Equal", null, "value1"),
+                    new Toleration("NoExecute", "key2", "Exists", 6000L, null));
 
-	private static final String RESOURCE_NAME = "test";
-	private static final Long RESOURCE_AMOUNT = 2L;
-	private static final String RESOURCE_CONFIG_KEY = "test.com/test";
+    private static final String RESOURCE_NAME = "test";
+    private static final Long RESOURCE_AMOUNT = 2L;
+    private static final String RESOURCE_CONFIG_KEY = "test.com/test";
 
-	private Pod resultPod;
-	private Container resultMainContainer;
+    private static final String USER_DEFINED_FLINK_LOG_DIR = "/path/of/flink-log";
 
-	@Override
-	protected void setupFlinkConfig() {
-		super.setupFlinkConfig();
+    private Pod resultPod;
+    private Container resultMainContainer;
 
-		this.flinkConfig.set(KubernetesConfigOptions.CONTAINER_IMAGE_PULL_SECRETS, IMAGE_PULL_SECRETS);
-		this.flinkConfig.set(KubernetesConfigOptions.TASK_MANAGER_ANNOTATIONS, ANNOTATIONS);
-		this.flinkConfig.setString(KubernetesConfigOptions.TASK_MANAGER_TOLERATIONS.key(), TOLERATION_STRING);
+    @Override
+    protected void setupFlinkConfig() {
+        super.setupFlinkConfig();
 
-		// Set up external resource configs
-		flinkConfig.setString(ExternalResourceOptions.EXTERNAL_RESOURCE_LIST.key(), RESOURCE_NAME);
-		flinkConfig.setLong(ExternalResourceOptions.getSystemConfigKeyConfigOptionForResource(RESOURCE_NAME, ExternalResourceOptions.EXTERNAL_RESOURCE_AMOUNT_SUFFIX), RESOURCE_AMOUNT);
-		flinkConfig.setString(ExternalResourceOptions.getSystemConfigKeyConfigOptionForResource(RESOURCE_NAME, KubernetesConfigOptions.EXTERNAL_RESOURCE_KUBERNETES_CONFIG_KEY_SUFFIX), RESOURCE_CONFIG_KEY);
-	}
+        this.flinkConfig.set(
+                KubernetesConfigOptions.KUBERNETES_SERVICE_ACCOUNT, SERVICE_ACCOUNT_NAME);
+        this.flinkConfig.set(
+                KubernetesConfigOptions.CONTAINER_IMAGE_PULL_SECRETS, IMAGE_PULL_SECRETS);
+        this.flinkConfig.set(KubernetesConfigOptions.TASK_MANAGER_ANNOTATIONS, ANNOTATIONS);
+        this.flinkConfig.setString(
+                KubernetesConfigOptions.TASK_MANAGER_TOLERATIONS.key(), TOLERATION_STRING);
 
-	@Override
-	protected void onSetup() throws Exception {
-		super.onSetup();
+        // Set up external resource configs
+        flinkConfig.setString(ExternalResourceOptions.EXTERNAL_RESOURCE_LIST.key(), RESOURCE_NAME);
+        flinkConfig.setLong(
+                ExternalResourceOptions.getSystemConfigKeyConfigOptionForResource(
+                        RESOURCE_NAME, ExternalResourceOptions.EXTERNAL_RESOURCE_AMOUNT_SUFFIX),
+                RESOURCE_AMOUNT);
+        flinkConfig.setString(
+                ExternalResourceOptions.getSystemConfigKeyConfigOptionForResource(
+                        RESOURCE_NAME,
+                        KubernetesConfigOptions.EXTERNAL_RESOURCE_KUBERNETES_CONFIG_KEY_SUFFIX),
+                RESOURCE_CONFIG_KEY);
+        this.flinkConfig.set(KubernetesConfigOptions.FLINK_LOG_DIR, USER_DEFINED_FLINK_LOG_DIR);
+    }
 
-		final InitTaskManagerDecorator initTaskManagerDecorator =
-			new InitTaskManagerDecorator(kubernetesTaskManagerParameters);
+    @Override
+    protected void onSetup() throws Exception {
+        super.onSetup();
 
-		final FlinkPod resultFlinkPod = initTaskManagerDecorator.decorateFlinkPod(this.baseFlinkPod);
-		this.resultPod = resultFlinkPod.getPod();
-		this.resultMainContainer = resultFlinkPod.getMainContainer();
-	}
+        final InitTaskManagerDecorator initTaskManagerDecorator =
+                new InitTaskManagerDecorator(kubernetesTaskManagerParameters);
 
-	@Test
-	public void testApiVersion() {
-		assertEquals(Constants.API_VERSION, this.resultPod.getApiVersion());
-	}
+        final FlinkPod resultFlinkPod =
+                initTaskManagerDecorator.decorateFlinkPod(this.baseFlinkPod);
+        this.resultPod = resultFlinkPod.getPodWithoutMainContainer();
+        this.resultMainContainer = resultFlinkPod.getMainContainer();
+    }
 
-	@Test
-	public void testMainContainerName() {
-		assertEquals(
-			kubernetesTaskManagerParameters.getTaskManagerMainContainerName(),
-			this.resultMainContainer.getName());
-	}
+    @Test
+    void testApiVersion() {
+        assertThat(this.resultPod.getApiVersion()).isEqualTo(Constants.API_VERSION);
+    }
 
-	@Test
-	public void testMainContainerImage() {
-		assertEquals(CONTAINER_IMAGE, this.resultMainContainer.getImage());
-	}
+    @Test
+    void testMainContainerName() {
+        assertThat(this.resultMainContainer.getName()).isEqualTo(Constants.MAIN_CONTAINER_NAME);
+    }
 
-	@Test
-	public void testMainContainerImagePullPolicy() {
-		assertEquals(CONTAINER_IMAGE_PULL_POLICY.name(), this.resultMainContainer.getImagePullPolicy());
-	}
+    @Test
+    void testMainContainerImage() {
+        assertThat(this.resultMainContainer.getImage()).isEqualTo(CONTAINER_IMAGE);
+    }
 
-	@Test
-	public void testMainContainerResourceRequirements() {
-		final ResourceRequirements resourceRequirements = this.resultMainContainer.getResources();
+    @Test
+    void testMainContainerImagePullPolicy() {
+        assertThat(this.resultMainContainer.getImagePullPolicy())
+                .isEqualTo(CONTAINER_IMAGE_PULL_POLICY.name());
+    }
 
-		final Map<String, Quantity> requests = resourceRequirements.getRequests();
-		assertEquals(Double.toString(TASK_MANAGER_CPU), requests.get("cpu").getAmount());
-		assertEquals(String.valueOf(TOTAL_PROCESS_MEMORY), requests.get("memory").getAmount());
+    @Test
+    void testMainContainerResourceRequirements() {
+        final ResourceRequirements resourceRequirements = this.resultMainContainer.getResources();
 
-		final Map<String, Quantity> limits = resourceRequirements.getLimits();
-		assertEquals(Double.toString(TASK_MANAGER_CPU), limits.get("cpu").getAmount());
-		assertEquals(String.valueOf(TOTAL_PROCESS_MEMORY), limits.get("memory").getAmount());
-	}
+        final Map<String, Quantity> requests = resourceRequirements.getRequests();
+        assertThat(requests.get("cpu").getAmount()).isEqualTo(Double.toString(TASK_MANAGER_CPU));
+        assertThat(requests.get("memory").getAmount())
+                .isEqualTo(String.valueOf(TOTAL_PROCESS_MEMORY));
 
-	@Test
-	public void testExternalResourceInResourceRequirements() {
-		final ResourceRequirements resourceRequirements = this.resultMainContainer.getResources();
+        final Map<String, Quantity> limits = resourceRequirements.getLimits();
+        assertThat(limits.get("cpu").getAmount())
+                .isEqualTo(Double.toString(TASK_MANAGER_CPU * TASK_MANAGER_CPU_LIMIT_FACTOR));
+        assertThat(limits.get("memory").getAmount())
+                .isEqualTo(
+                        Integer.toString(
+                                (int) (TOTAL_PROCESS_MEMORY * TASK_MANAGER_MEMORY_LIMIT_FACTOR)));
+    }
 
-		final Map<String, Quantity> requests = resourceRequirements.getRequests();
-		assertEquals(Long.toString(RESOURCE_AMOUNT), requests.get(RESOURCE_CONFIG_KEY).getAmount());
+    @Test
+    void testExternalResourceInResourceRequirements() {
+        final ResourceRequirements resourceRequirements = this.resultMainContainer.getResources();
 
-		final Map<String, Quantity> limits = resourceRequirements.getLimits();
-		assertEquals(Long.toString(RESOURCE_AMOUNT), limits.get(RESOURCE_CONFIG_KEY).getAmount());
-	}
+        final Map<String, Quantity> requests = resourceRequirements.getRequests();
+        assertThat(requests.get(RESOURCE_CONFIG_KEY).getAmount())
+                .isEqualTo(Long.toString(RESOURCE_AMOUNT));
 
-	@Test
-	public void testMainContainerPorts() {
-		final List<ContainerPort> expectedContainerPorts = Collections.singletonList(
-			new ContainerPortBuilder()
-				.withName(Constants.TASK_MANAGER_RPC_PORT_NAME)
-				.withContainerPort(RPC_PORT)
-			.build());
+        final Map<String, Quantity> limits = resourceRequirements.getLimits();
+        assertThat(limits.get(RESOURCE_CONFIG_KEY).getAmount())
+                .isEqualTo(Long.toString(RESOURCE_AMOUNT));
+    }
 
-		assertEquals(expectedContainerPorts, this.resultMainContainer.getPorts());
-	}
+    @Test
+    void testMainContainerPorts() {
+        final List<ContainerPort> expectedContainerPorts =
+                Collections.singletonList(
+                        new ContainerPortBuilder()
+                                .withName(Constants.TASK_MANAGER_RPC_PORT_NAME)
+                                .withContainerPort(RPC_PORT)
+                                .build());
 
-	@Test
-	public void testMainContainerEnv() {
-		final Map<String, String> expectedEnvVars = new HashMap<>(customizedEnvs);
+        assertThat(this.resultMainContainer.getPorts()).isEqualTo(expectedContainerPorts);
+    }
 
-		final Map<String, String> resultEnvVars = this.resultMainContainer.getEnv()
-			.stream()
-			.collect(Collectors.toMap(EnvVar::getName, EnvVar::getValue));
+    @Test
+    void testMainContainerEnv() {
+        final Map<String, String> expectedEnvVars = new HashMap<>(customizedEnvs);
+        final Map<String, String> resultEnvVars = new HashMap<>();
+        this.resultMainContainer
+                .getEnv()
+                .forEach(envVar -> resultEnvVars.put(envVar.getName(), envVar.getValue()));
+        expectedEnvVars.forEach((k, v) -> assertThat(resultEnvVars.get(k)).isEqualTo(v));
+    }
 
-		assertEquals(expectedEnvVars, resultEnvVars);
-	}
+    @Test
+    void testNodeIdEnv() {
+        assertThat(this.resultMainContainer.getEnv())
+                .anyMatch(
+                        envVar ->
+                                envVar.getName().equals(Constants.ENV_FLINK_POD_NODE_ID)
+                                        && envVar.getValueFrom()
+                                                .getFieldRef()
+                                                .getApiVersion()
+                                                .equals(Constants.API_VERSION)
+                                        && envVar.getValueFrom()
+                                                .getFieldRef()
+                                                .getFieldPath()
+                                                .equals(Constants.POD_NODE_ID_FIELD_PATH));
+    }
 
-	@Test
-	public void testPodName() {
-		assertEquals(POD_NAME, this.resultPod.getMetadata().getName());
-	}
+    @Test
+    void testPodName() {
+        assertThat(this.resultPod.getMetadata().getName()).isEqualTo(POD_NAME);
+    }
 
-	@Test
-	public void testPodLabels() {
-		final Map<String, String> expectedLabels = new HashMap<>(getCommonLabels());
-		expectedLabels.put(Constants.LABEL_COMPONENT_KEY, Constants.LABEL_COMPONENT_TASK_MANAGER);
-		expectedLabels.putAll(userLabels);
+    @Test
+    void testPodLabels() {
+        final Map<String, String> expectedLabels = new HashMap<>(getCommonLabels());
+        expectedLabels.put(Constants.LABEL_COMPONENT_KEY, Constants.LABEL_COMPONENT_TASK_MANAGER);
+        expectedLabels.putAll(userLabels);
 
-		assertEquals(expectedLabels, this.resultPod.getMetadata().getLabels());
-	}
+        assertThat(this.resultPod.getMetadata().getLabels()).isEqualTo(expectedLabels);
+    }
 
-	@Test
-	public void testPodAnnotations() {
-		final Map<String, String> resultAnnotations = kubernetesTaskManagerParameters.getAnnotations();
-		assertThat(resultAnnotations, is(equalTo(ANNOTATIONS)));
-	}
+    @Test
+    void testPodAnnotations() {
+        final Map<String, String> resultAnnotations =
+                kubernetesTaskManagerParameters.getAnnotations();
+        assertThat(resultAnnotations).isEqualTo(ANNOTATIONS);
+    }
 
-	@Test
-	public void testRestartPolicy() {
-		final String resultRestartPolicy = this.resultPod.getSpec().getRestartPolicy();
+    @Test
+    void testPodServiceAccountName() {
+        assertThat(this.resultPod.getSpec().getServiceAccountName())
+                .isEqualTo(SERVICE_ACCOUNT_NAME);
+    }
 
-		assertThat(resultRestartPolicy, is(Constants.RESTART_POLICY_OF_NEVER));
-	}
+    @Test
+    void testRestartPolicy() {
+        final String resultRestartPolicy = this.resultPod.getSpec().getRestartPolicy();
 
-	@Test
-	public void testImagePullSecrets() {
-		final List<String> resultSecrets = this.resultPod.getSpec().getImagePullSecrets()
-			.stream()
-			.map(LocalObjectReference::getName)
-			.collect(Collectors.toList());
+        assertThat(resultRestartPolicy).isEqualTo(Constants.RESTART_POLICY_OF_NEVER);
+    }
 
-		assertEquals(IMAGE_PULL_SECRETS, resultSecrets);
-	}
+    @Test
+    void testImagePullSecrets() {
+        final List<String> resultSecrets =
+                this.resultPod.getSpec().getImagePullSecrets().stream()
+                        .map(LocalObjectReference::getName)
+                        .collect(Collectors.toList());
 
-	@Test
-	public void testNodeSelector() {
-		assertThat(this.resultPod.getSpec().getNodeSelector(), is(equalTo(nodeSelector)));
-	}
+        assertThat(resultSecrets).isEqualTo(IMAGE_PULL_SECRETS);
+    }
 
-	@Test
-	public void testPodTolerations() {
-		assertThat(this.resultPod.getSpec().getTolerations(), Matchers.containsInAnyOrder(TOLERATION.toArray()));
-	}
+    @Test
+    void testNodeSelector() {
+        assertThat(this.resultPod.getSpec().getNodeSelector()).isEqualTo(nodeSelector);
+    }
+
+    @Test
+    void testPodTolerations() {
+        assertThat(this.resultPod.getSpec().getTolerations())
+                .containsExactlyInAnyOrderElementsOf(TOLERATION);
+    }
+
+    @Test
+    void testFlinkLogDirEnvShouldBeSetIfConfiguredViaOptions() {
+        final List<EnvVar> envVars = this.resultMainContainer.getEnv();
+        assertThat(envVars)
+                .anyMatch(
+                        envVar ->
+                                envVar.getName().equals(Constants.ENV_FLINK_LOG_DIR)
+                                        && envVar.getValue().equals(USER_DEFINED_FLINK_LOG_DIR));
+    }
+
+    @Test
+    void testNodeAffinity() {
+        List<NodeSelectorTerm> nodeSelectorTerms =
+                this.resultPod
+                        .getSpec()
+                        .getAffinity()
+                        .getNodeAffinity()
+                        .getRequiredDuringSchedulingIgnoredDuringExecution()
+                        .getNodeSelectorTerms();
+        assertThat(nodeSelectorTerms.size()).isEqualTo(1);
+
+        List<NodeSelectorRequirement> requirements = nodeSelectorTerms.get(0).getMatchExpressions();
+        assertThat(requirements)
+                .containsExactlyInAnyOrder(
+                        new NodeSelectorRequirement(
+                                flinkConfig.getString(
+                                        KubernetesConfigOptions.KUBERNETES_NODE_NAME_LABEL),
+                                "NotIn",
+                                new ArrayList<>(BLOCKED_NODES)));
+    }
 }

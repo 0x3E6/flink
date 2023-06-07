@@ -25,154 +25,245 @@ import javax.annotation.Nullable;
 import java.util.HashMap;
 import java.util.Map;
 
-import static org.apache.flink.util.Preconditions.checkNotNull;
+import static java.util.stream.Collectors.toConcurrentMap;
 
 /**
  * Statistics for a pending checkpoint that is still in progress.
  *
- * <p>This is the starting point for all checkpoint tracking. The life cycle
- * of instances of this class is tightly coupled to a {@link PendingCheckpoint}
- * instance, which forwards statistics about acknowledged subtasks
- * via {@link #reportSubtaskStats(JobVertexID, SubtaskStateStats)}.
+ * <p>This is the starting point for all checkpoint tracking. The life cycle of instances of this
+ * class is tightly coupled to a {@link PendingCheckpoint} instance, which forwards statistics about
+ * acknowledged subtasks via {@link #reportSubtaskStats(JobVertexID, SubtaskStateStats)}.
  *
- * <p>Depending on whether the {@link PendingCheckpoint} is finalized
- * successfully or aborted, we replace ourselves with a {@link CompletedCheckpointStats}
- * or {@link FailedCheckpointStats} and notify the {@link CheckpointStatsTracker}.
+ * <p>Depending on whether the {@link PendingCheckpoint} is finalized successfully or aborted, we
+ * replace ourselves with a {@link CompletedCheckpointStats} or {@link FailedCheckpointStats} and
+ * notify the {@link CheckpointStatsTracker}.
  *
  * <p>The statistics gathered here are all live updated.
  */
 public class PendingCheckpointStats extends AbstractCheckpointStats {
 
-	private static final long serialVersionUID = -973959257699390327L;
+    private static final long serialVersionUID = -973959257699390327L;
 
-	/** Tracker callback when the pending checkpoint is finalized or aborted. */
-	private final transient CheckpointStatsTracker.PendingCheckpointStatsCallback trackerCallback;
+    /** The current number of acknowledged subtasks. */
+    private volatile int currentNumAcknowledgedSubtasks;
 
-	/** The current number of acknowledged subtasks. */
-	private volatile int currentNumAcknowledgedSubtasks;
+    /** Current checkpoint state size over all collected subtasks. */
+    private volatile long currentStateSize;
 
-	/** Current checkpoint state size over all collected subtasks. */
-	private volatile long currentStateSize;
+    private volatile long currentCheckpointedSize;
 
-	/** Stats of the latest acknowledged subtask. */
-	private volatile SubtaskStateStats latestAcknowledgedSubtask;
+    private volatile long currentProcessedData;
 
-	/**
-	 * Creates a tracker for a {@link PendingCheckpoint}.
-	 *
-	 * @param checkpointId ID of the checkpoint.
-	 * @param triggerTimestamp Timestamp when the checkpoint was triggered.
-	 * @param props Checkpoint properties of the checkpoint.
-	 * @param totalSubtaskCount Total number of subtasks for the checkpoint.
-	 * @param taskStats Task stats for each involved operator.
-	 * @param trackerCallback Callback for the {@link CheckpointStatsTracker}.
-	 */
-	PendingCheckpointStats(
-			long checkpointId,
-			long triggerTimestamp,
-			CheckpointProperties props,
-			int totalSubtaskCount,
-			Map<JobVertexID, TaskStateStats> taskStats,
-			CheckpointStatsTracker.PendingCheckpointStatsCallback trackerCallback) {
+    private volatile long currentPersistedData;
 
-		super(checkpointId, triggerTimestamp, props, totalSubtaskCount, taskStats);
-		this.trackerCallback = checkNotNull(trackerCallback);
-	}
+    private volatile boolean unalignedCheckpoint;
 
-	@Override
-	public CheckpointStatsStatus getStatus() {
-		return CheckpointStatsStatus.IN_PROGRESS;
-	}
+    /** Stats of the latest acknowledged subtask. */
+    private volatile SubtaskStateStats latestAcknowledgedSubtask;
 
-	@Override
-	public int getNumberOfAcknowledgedSubtasks() {
-		return currentNumAcknowledgedSubtasks;
-	}
+    /**
+     * Creates a tracker for a {@link PendingCheckpoint}.
+     *
+     * @param checkpointId ID of the checkpoint.
+     * @param triggerTimestamp Timestamp when the checkpoint was triggered.
+     * @param props Checkpoint properties of the checkpoint.
+     * @param taskStats Task stats for each involved operator.
+     */
+    PendingCheckpointStats(
+            long checkpointId,
+            long triggerTimestamp,
+            CheckpointProperties props,
+            Map<JobVertexID, Integer> taskStats) {
+        this(
+                checkpointId,
+                triggerTimestamp,
+                props,
+                taskStats.values().stream().mapToInt(i -> i).sum(),
+                taskStats.entrySet().stream()
+                        .collect(
+                                toConcurrentMap(
+                                        Map.Entry::getKey,
+                                        e -> new TaskStateStats(e.getKey(), e.getValue()))));
+    }
 
-	@Override
-	public long getStateSize() {
-		return currentStateSize;
-	}
+    /**
+     * Creates a tracker for a {@link PendingCheckpoint}.
+     *
+     * @param checkpointId ID of the checkpoint.
+     * @param triggerTimestamp Timestamp when the checkpoint was triggered.
+     * @param props Checkpoint properties of the checkpoint.
+     * @param totalSubtaskCount Total number of subtasks for the checkpoint.
+     * @param taskStats Task stats for each involved operator.
+     */
+    PendingCheckpointStats(
+            long checkpointId,
+            long triggerTimestamp,
+            CheckpointProperties props,
+            int totalSubtaskCount,
+            Map<JobVertexID, TaskStateStats> taskStats) {
+        this(
+                checkpointId,
+                triggerTimestamp,
+                props,
+                totalSubtaskCount,
+                0,
+                taskStats,
+                0,
+                0,
+                0,
+                0,
+                false,
+                null);
+    }
 
-	@Override
-	public SubtaskStateStats getLatestAcknowledgedSubtaskStats() {
-		return latestAcknowledgedSubtask;
-	}
+    PendingCheckpointStats(
+            long checkpointId,
+            long triggerTimestamp,
+            CheckpointProperties props,
+            int totalSubtaskCount,
+            int acknowledgedSubtaskCount,
+            Map<JobVertexID, TaskStateStats> taskStats,
+            long currentCheckpointedSize,
+            long currentStateSize,
+            long processedData,
+            long persistedData,
+            boolean unalignedCheckpoint,
+            @Nullable SubtaskStateStats latestAcknowledgedSubtask) {
 
-	// ------------------------------------------------------------------------
-	// Callbacks from the PendingCheckpoint instance
-	// ------------------------------------------------------------------------
+        super(checkpointId, triggerTimestamp, props, totalSubtaskCount, taskStats);
+        this.currentCheckpointedSize = currentCheckpointedSize;
+        this.currentStateSize = currentStateSize;
+        this.currentProcessedData = processedData;
+        this.currentPersistedData = persistedData;
+        this.unalignedCheckpoint = unalignedCheckpoint;
+        this.latestAcknowledgedSubtask = latestAcknowledgedSubtask;
+        this.currentNumAcknowledgedSubtasks = acknowledgedSubtaskCount;
+    }
 
-	/**
-	 * Reports statistics for a single subtask.
-	 *
-	 * @param jobVertexId ID of the task/operator the subtask belongs to.
-	 * @param subtask The statistics for the subtask.
-	 * @return <code>true</code> if successfully reported or <code>false</code> otherwise.
-	 */
-	boolean reportSubtaskStats(JobVertexID jobVertexId, SubtaskStateStats subtask) {
-		TaskStateStats taskStateStats = taskStats.get(jobVertexId);
+    @Override
+    public CheckpointStatsStatus getStatus() {
+        return CheckpointStatsStatus.IN_PROGRESS;
+    }
 
-		if (taskStateStats != null && taskStateStats.reportSubtaskStats(subtask)) {
-			currentNumAcknowledgedSubtasks++;
-			latestAcknowledgedSubtask = subtask;
+    @Override
+    public int getNumberOfAcknowledgedSubtasks() {
+        return currentNumAcknowledgedSubtasks;
+    }
 
-			currentStateSize += subtask.getStateSize();
+    @Override
+    public long getStateSize() {
+        return currentStateSize;
+    }
 
-			return true;
-		} else {
-			return false;
-		}
-	}
+    @Override
+    public long getCheckpointedSize() {
+        return currentCheckpointedSize;
+    }
 
-	/**
-	 * Reports a successfully completed pending checkpoint.
-	 *
-	 * @param externalPointer Optional external storage path if checkpoint was externalized.
-	 * @return Callback for the {@link CompletedCheckpoint} instance to notify about disposal.
-	 */
-	CompletedCheckpointStats.DiscardCallback reportCompletedCheckpoint(String externalPointer) {
-		CompletedCheckpointStats completed = new CompletedCheckpointStats(
-			checkpointId,
-			triggerTimestamp,
-			props,
-			numberOfSubtasks,
-			new HashMap<>(taskStats),
-			currentNumAcknowledgedSubtasks,
-			currentStateSize,
-			latestAcknowledgedSubtask,
-				externalPointer);
+    @Override
+    public long getProcessedData() {
+        return currentProcessedData;
+    }
 
-		trackerCallback.reportCompletedCheckpoint(completed);
+    @Override
+    public long getPersistedData() {
+        return currentPersistedData;
+    }
 
-		return completed.getDiscardCallback();
-	}
+    @Override
+    public boolean isUnalignedCheckpoint() {
+        return unalignedCheckpoint;
+    }
 
-	/**
-	 * Reports a failed pending checkpoint.
-	 *
-	 * @param failureTimestamp Timestamp of the failure.
-	 * @param cause Optional cause of the failure.
-	 */
-	void reportFailedCheckpoint(long failureTimestamp, @Nullable Throwable cause) {
-		FailedCheckpointStats failed = new FailedCheckpointStats(
-			checkpointId,
-			triggerTimestamp,
-			props,
-			numberOfSubtasks,
-			new HashMap<>(taskStats),
-			currentNumAcknowledgedSubtasks,
-			currentStateSize,
-			failureTimestamp,
-			latestAcknowledgedSubtask,
-			cause);
+    @Override
+    public SubtaskStateStats getLatestAcknowledgedSubtaskStats() {
+        return latestAcknowledgedSubtask;
+    }
 
-		trackerCallback.reportFailedCheckpoint(failed);
-	}
+    // ------------------------------------------------------------------------
+    // Callbacks from the PendingCheckpoint instance
+    // ------------------------------------------------------------------------
 
-	@Override
-	public String toString() {
-		return "PendingCheckpoint(id=" + getCheckpointId() + ")";
-	}
+    /**
+     * Reports statistics for a single subtask.
+     *
+     * @param jobVertexId ID of the task/operator the subtask belongs to.
+     * @param subtask The statistics for the subtask.
+     * @return <code>true</code> if successfully reported or <code>false</code> otherwise.
+     */
+    boolean reportSubtaskStats(JobVertexID jobVertexId, SubtaskStateStats subtask) {
+        TaskStateStats taskStateStats = taskStats.get(jobVertexId);
 
+        if (taskStateStats != null && taskStateStats.reportSubtaskStats(subtask)) {
+            if (subtask.isCompleted()) {
+                currentNumAcknowledgedSubtasks++;
+                latestAcknowledgedSubtask = subtask;
+            }
+
+            currentCheckpointedSize += subtask.getCheckpointedSize();
+            currentStateSize += subtask.getStateSize();
+
+            long processedData = subtask.getProcessedData();
+            if (processedData > 0) {
+                currentProcessedData += processedData;
+            }
+
+            long persistedData = subtask.getPersistedData();
+            if (persistedData > 0) {
+                currentPersistedData += persistedData;
+            }
+
+            unalignedCheckpoint |= subtask.getUnalignedCheckpoint();
+
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    CompletedCheckpointStats toCompletedCheckpointStats(String externalPointer) {
+        return new CompletedCheckpointStats(
+                checkpointId,
+                triggerTimestamp,
+                props,
+                numberOfSubtasks,
+                new HashMap<>(taskStats),
+                currentNumAcknowledgedSubtasks,
+                currentCheckpointedSize,
+                currentStateSize,
+                currentProcessedData,
+                currentPersistedData,
+                unalignedCheckpoint,
+                latestAcknowledgedSubtask,
+                externalPointer);
+    }
+
+    /**
+     * Reports a failed pending checkpoint.
+     *
+     * @param failureTimestamp Timestamp of the failure.
+     * @param cause Optional cause of the failure.
+     */
+    FailedCheckpointStats toFailedCheckpoint(long failureTimestamp, @Nullable Throwable cause) {
+        return new FailedCheckpointStats(
+                checkpointId,
+                triggerTimestamp,
+                props,
+                numberOfSubtasks,
+                new HashMap<>(taskStats),
+                currentNumAcknowledgedSubtasks,
+                currentCheckpointedSize,
+                currentStateSize,
+                currentProcessedData,
+                currentPersistedData,
+                unalignedCheckpoint,
+                failureTimestamp,
+                latestAcknowledgedSubtask,
+                cause);
+    }
+
+    @Override
+    public String toString() {
+        return "PendingCheckpoint(id=" + getCheckpointId() + ")";
+    }
 }

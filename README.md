@@ -41,7 +41,7 @@ val text = env.socketTextStream(host, port, '\n')
 val windowCounts = text.flatMap { w => w.split("\\s") }
   .map { w => WordWithCount(w, 1) }
   .keyBy("word")
-  .timeWindow(Time.seconds(5))
+  .window(TumblingProcessingTimeWindow.of(Time.seconds(5)))
   .sum("count")
 
 windowCounts.print()
@@ -69,13 +69,13 @@ Prerequisites for building Flink:
 
 * Unix-like environment (we use Linux, Mac OS X, Cygwin, WSL)
 * Git
-* Maven (we recommend version 3.2.5 and require at least 3.1.1)
+* Maven (we recommend version 3.8.6 and require at least 3.1.1)
 * Java 8 or 11 (Java 9 or 10 may work)
 
 ```
 git clone https://github.com/apache/flink.git
 cd flink
-mvn clean package -DskipTests # this will take up to 10 minutes
+./mvnw clean package -DskipTests # this will take up to 10 minutes
 ```
 
 Flink is now installed in `build-target`.
@@ -100,7 +100,7 @@ The IntelliJ IDE supports Maven out of the box and offers a plugin for Scala dev
 * IntelliJ download: [https://www.jetbrains.com/idea/](https://www.jetbrains.com/idea/)
 * IntelliJ Scala Plugin: [https://plugins.jetbrains.com/plugin/?id=1347](https://plugins.jetbrains.com/plugin/?id=1347)
 
-Check out our [Setting up IntelliJ](https://ci.apache.org/projects/flink/flink-docs-master/flinkDev/ide_setup.html#intellij-idea) guide for details.
+Check out our [Setting up IntelliJ](https://nightlies.apache.org/flink/flink-docs-master/flinkDev/ide_setup.html#intellij-idea) guide for details.
 
 ### Eclipse Scala IDE
 
@@ -116,7 +116,7 @@ Don’t hesitate to ask!
 
 Contact the developers and community on the [mailing lists](https://flink.apache.org/community.html#mailing-lists) if you need any help.
 
-[Open an issue](https://issues.apache.org/jira/browse/FLINK) if you found a bug in Flink.
+[Open an issue](https://issues.apache.org/jira/browse/FLINK) if you find a bug in Flink.
 
 
 ## Documentation

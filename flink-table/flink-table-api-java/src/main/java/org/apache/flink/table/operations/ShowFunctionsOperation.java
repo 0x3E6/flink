@@ -18,13 +18,68 @@
 
 package org.apache.flink.table.operations;
 
-/**
- * Operation to describe a SHOW FUNCTIONS statement.
- */
+import org.apache.flink.table.api.internal.TableResultInternal;
+
+import java.util.Arrays;
+
+import static org.apache.flink.table.api.internal.TableResultUtils.buildStringArrayResult;
+
+/** Operation to describe a SHOW [USER] FUNCTIONS statement. */
 public class ShowFunctionsOperation implements ShowOperation {
 
-	@Override
-	public String asSummaryString() {
-		return "SHOW FUNCTIONS";
-	}
+    /**
+     * Represent scope of function.
+     *
+     * <ul>
+     *   <li><b>USER</b> return only user-defined functions
+     *   <li><b>ALL</b> return all user-defined and built-in functions
+     * </ul>
+     */
+    public enum FunctionScope {
+        USER,
+        ALL
+    }
+
+    private final FunctionScope functionScope;
+
+    public ShowFunctionsOperation() {
+        // "SHOW FUNCTIONS" default is ALL scope
+        this.functionScope = FunctionScope.ALL;
+    }
+
+    public ShowFunctionsOperation(FunctionScope functionScope) {
+        this.functionScope = functionScope;
+    }
+
+    @Override
+    public String asSummaryString() {
+        if (functionScope == FunctionScope.ALL) {
+            return "SHOW FUNCTIONS";
+        } else {
+            return String.format("SHOW %s FUNCTIONS", functionScope);
+        }
+    }
+
+    public FunctionScope getFunctionScope() {
+        return functionScope;
+    }
+
+    @Override
+    public TableResultInternal execute(Context ctx) {
+        final String[] functionNames;
+        switch (functionScope) {
+            case USER:
+                functionNames = ctx.getFunctionCatalog().getUserDefinedFunctions();
+                break;
+            case ALL:
+                functionNames = ctx.getFunctionCatalog().getFunctions();
+                break;
+            default:
+                throw new UnsupportedOperationException(
+                        String.format(
+                                "SHOW FUNCTIONS with %s scope is not supported.", functionScope));
+        }
+        Arrays.sort(functionNames);
+        return buildStringArrayResult("function name", functionNames);
+    }
 }

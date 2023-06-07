@@ -32,38 +32,42 @@ import static org.apache.flink.util.Preconditions.checkArgument;
 /**
  * {@link FlinkPipelineTranslator} for DataStream API {@link StreamGraph StreamGraphs}.
  *
- * <p>Note: this is used through reflection in
- * {@link org.apache.flink.client.FlinkPipelineTranslationUtil}.
+ * <p>Note: this is used through reflection in {@link
+ * org.apache.flink.client.FlinkPipelineTranslationUtil}.
  */
 @SuppressWarnings("unused")
 public class StreamGraphTranslator implements FlinkPipelineTranslator {
 
-	private static final Logger LOG = LoggerFactory.getLogger(StreamGraphTranslator.class);
+    private static final Logger LOG = LoggerFactory.getLogger(StreamGraphTranslator.class);
 
-	@Override
-	public JobGraph translateToJobGraph(
-			Pipeline pipeline,
-			Configuration optimizerConfiguration,
-			int defaultParallelism) {
-		checkArgument(pipeline instanceof StreamGraph,
-				"Given pipeline is not a DataStream StreamGraph.");
+    private final ClassLoader userClassloader;
 
-		StreamGraph streamGraph = (StreamGraph) pipeline;
-		return streamGraph.getJobGraph(null);
-	}
+    public StreamGraphTranslator(ClassLoader userClassloader) {
+        this.userClassloader = userClassloader;
+    }
 
-	@Override
-	public String translateToJSONExecutionPlan(Pipeline pipeline) {
-		checkArgument(pipeline instanceof StreamGraph,
-				"Given pipeline is not a DataStream StreamGraph.");
+    @Override
+    public JobGraph translateToJobGraph(
+            Pipeline pipeline, Configuration optimizerConfiguration, int defaultParallelism) {
+        checkArgument(
+                pipeline instanceof StreamGraph, "Given pipeline is not a DataStream StreamGraph.");
 
-		StreamGraph streamGraph = (StreamGraph) pipeline;
+        StreamGraph streamGraph = (StreamGraph) pipeline;
+        return streamGraph.getJobGraph(userClassloader, null);
+    }
 
-		return streamGraph.getStreamingPlanAsJSON();
-	}
+    @Override
+    public String translateToJSONExecutionPlan(Pipeline pipeline) {
+        checkArgument(
+                pipeline instanceof StreamGraph, "Given pipeline is not a DataStream StreamGraph.");
 
-	@Override
-	public boolean canTranslate(Pipeline pipeline) {
-		return pipeline instanceof StreamGraph;
-	}
+        StreamGraph streamGraph = (StreamGraph) pipeline;
+
+        return streamGraph.getStreamingPlanAsJSON();
+    }
+
+    @Override
+    public boolean canTranslate(Pipeline pipeline) {
+        return pipeline instanceof StreamGraph;
+    }
 }

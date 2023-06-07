@@ -31,8 +31,8 @@ import java.nio.ReadOnlyBufferException;
 import static org.apache.flink.util.Preconditions.checkState;
 
 /**
- * Minimal best-effort read-only sliced {@link Buffer} implementation wrapping a
- * {@link NetworkBuffer}'s sub-region based on <tt>io.netty.buffer.SlicedByteBuf</tt> and
+ * Minimal best-effort read-only sliced {@link Buffer} implementation wrapping a {@link
+ * NetworkBuffer}'s sub-region based on <tt>io.netty.buffer.SlicedByteBuf</tt> and
  * <tt>io.netty.buffer.ReadOnlyByteBuf</tt>.
  *
  * <p><strong>BEWARE:</strong> We do not guarantee to block every operation that is able to write
@@ -40,195 +40,206 @@ import static org.apache.flink.util.Preconditions.checkState;
  */
 public final class ReadOnlySlicedNetworkBuffer extends ReadOnlyByteBuf implements Buffer {
 
-	private final int memorySegmentOffset;
+    private final int memorySegmentOffset;
 
-	private boolean isCompressed = false;
+    private boolean isCompressed = false;
 
-	/**
-	 * Creates a buffer which shares the memory segment of the given buffer and exposed the given
-	 * sub-region only.
-	 *
-	 * <p>Reader and writer indices as well as markers are not shared. Reference counters are
-	 * shared but the slice is not {@link #retainBuffer() retained} automatically.
-	 *
-	 * @param buffer the buffer to derive from
-	 * @param index the index to start from
-	 * @param length the length of the slice
-	 */
-	ReadOnlySlicedNetworkBuffer(NetworkBuffer buffer, int index, int length) {
-		super(new SlicedByteBuf(buffer, index, length));
-		this.memorySegmentOffset = buffer.getMemorySegmentOffset() + index;
-	}
+    private DataType dataType;
 
-	/**
-	 * Creates a buffer which shares the memory segment of the given buffer and exposed the given
-	 * sub-region only.
-	 *
-	 * <p>Reader and writer indices as well as markers are not shared. Reference counters are
-	 * shared but the slice is not {@link #retainBuffer() retained} automatically.
-	 *
-	 * @param buffer the buffer to derive from
-	 * @param index the index to start from
-	 * @param length the length of the slice
-	 * @param memorySegmentOffset <tt>buffer</tt>'s absolute offset in the backing {@link MemorySegment}
-	 * @param isCompressed whether the buffer is compressed or not
-	 */
-	ReadOnlySlicedNetworkBuffer(ByteBuf buffer, int index, int length, int memorySegmentOffset, boolean isCompressed) {
-		super(new SlicedByteBuf(buffer, index, length));
-		this.memorySegmentOffset = memorySegmentOffset + index;
-		this.isCompressed = isCompressed;
-	}
+    /**
+     * Creates a buffer which shares the memory segment of the given buffer and exposed the given
+     * sub-region only.
+     *
+     * <p>Reader and writer indices as well as markers are not shared. Reference counters are shared
+     * but the slice is not {@link #retainBuffer() retained} automatically.
+     *
+     * @param buffer the buffer to derive from
+     * @param index the index to start from
+     * @param length the length of the slice
+     * @param isCompressed is the buffer compressed
+     */
+    ReadOnlySlicedNetworkBuffer(NetworkBuffer buffer, int index, int length, boolean isCompressed) {
+        super(new SlicedByteBuf(buffer, index, length));
+        this.memorySegmentOffset = buffer.getMemorySegmentOffset() + index;
+        this.dataType = buffer.getDataType();
+        this.isCompressed = isCompressed;
+    }
 
-	@Override
-	public ByteBuf unwrap() {
-		return super.unwrap();
-	}
+    /**
+     * Creates a buffer which shares the memory segment of the given buffer and exposed the given
+     * sub-region only.
+     *
+     * <p>Reader and writer indices as well as markers are not shared. Reference counters are shared
+     * but the slice is not {@link #retainBuffer() retained} automatically.
+     *
+     * @param buffer the buffer to derive from
+     * @param index the index to start from
+     * @param length the length of the slice
+     * @param memorySegmentOffset <tt>buffer</tt>'s absolute offset in the backing {@link
+     *     MemorySegment}
+     * @param isCompressed whether the buffer is compressed or not
+     */
+    ReadOnlySlicedNetworkBuffer(
+            ByteBuf buffer, int index, int length, int memorySegmentOffset, boolean isCompressed) {
+        super(new SlicedByteBuf(buffer, index, length));
+        this.memorySegmentOffset = memorySegmentOffset + index;
+        this.isCompressed = isCompressed;
+        this.dataType = getBuffer().getDataType();
+    }
 
-	@Override
-	public boolean isBuffer() {
-		return getBuffer().isBuffer();
-	}
+    @Override
+    public ByteBuf unwrap() {
+        return super.unwrap();
+    }
 
-	/**
-	 * Returns the underlying memory segment.
-	 *
-	 * <p><strong>BEWARE:</strong> Although we cannot set the memory segment read-only it should be
-	 * handled as if it was!.
-	 *
-	 * @return the memory segment backing this buffer
-	 */
-	@Override
-	public MemorySegment getMemorySegment() {
-		return getBuffer().getMemorySegment();
-	}
+    @Override
+    public boolean isBuffer() {
+        return dataType.isBuffer();
+    }
 
-	@Override
-	public int getMemorySegmentOffset() {
-		return memorySegmentOffset;
-	}
+    /**
+     * Returns the underlying memory segment.
+     *
+     * <p><strong>BEWARE:</strong> Although we cannot set the memory segment read-only it should be
+     * handled as if it was!.
+     *
+     * @return the memory segment backing this buffer
+     */
+    @Override
+    public MemorySegment getMemorySegment() {
+        return getBuffer().getMemorySegment();
+    }
 
-	@Override
-	public BufferRecycler getRecycler() {
-		return getBuffer().getRecycler();
-	}
+    @Override
+    public int getMemorySegmentOffset() {
+        return memorySegmentOffset;
+    }
 
-	@Override
-	public void recycleBuffer() {
-		getBuffer().recycleBuffer();
-	}
+    @Override
+    public BufferRecycler getRecycler() {
+        return getBuffer().getRecycler();
+    }
 
-	@Override
-	public boolean isRecycled() {
-		return getBuffer().isRecycled();
-	}
+    @Override
+    public void recycleBuffer() {
+        getBuffer().recycleBuffer();
+    }
 
-	@Override
-	public ReadOnlySlicedNetworkBuffer retainBuffer() {
-		getBuffer().retainBuffer();
-		return this;
-	}
+    @Override
+    public boolean isRecycled() {
+        return getBuffer().isRecycled();
+    }
 
-	@Override
-	public ReadOnlySlicedNetworkBuffer readOnlySlice() {
-		return readOnlySlice(readerIndex(), readableBytes());
-	}
+    @Override
+    public ReadOnlySlicedNetworkBuffer retainBuffer() {
+        getBuffer().retainBuffer();
+        return this;
+    }
 
-	@Override
-	public ReadOnlySlicedNetworkBuffer readOnlySlice(int index, int length) {
-		checkState(!isCompressed, "Unable to slice a compressed buffer.");
-		return new ReadOnlySlicedNetworkBuffer(super.unwrap(), index, length, memorySegmentOffset, false);
-	}
+    @Override
+    public ReadOnlySlicedNetworkBuffer readOnlySlice() {
+        return readOnlySlice(readerIndex(), readableBytes());
+    }
 
-	@Override
-	public int getMaxCapacity() {
-		return maxCapacity();
-	}
+    @Override
+    public ReadOnlySlicedNetworkBuffer readOnlySlice(int index, int length) {
+        checkState(
+                !isCompressed || index + length == writerIndex(),
+                "Unable to partially slice a compressed buffer.");
+        return new ReadOnlySlicedNetworkBuffer(
+                super.unwrap(), index, length, memorySegmentOffset, isCompressed);
+    }
 
-	@Override
-	public int getReaderIndex() {
-		return readerIndex();
-	}
+    @Override
+    public int getMaxCapacity() {
+        return maxCapacity();
+    }
 
-	@Override
-	public void setReaderIndex(int readerIndex) throws IndexOutOfBoundsException {
-		readerIndex(readerIndex);
-	}
+    @Override
+    public int getReaderIndex() {
+        return readerIndex();
+    }
 
-	@Override
-	public int getSize() {
-		return writerIndex();
-	}
+    @Override
+    public void setReaderIndex(int readerIndex) throws IndexOutOfBoundsException {
+        readerIndex(readerIndex);
+    }
 
-	@Override
-	public void setSize(int writerIndex) {
-		writerIndex(writerIndex);
-	}
+    @Override
+    public int getSize() {
+        return writerIndex();
+    }
 
-	@Override
-	public ByteBuffer getNioBufferReadable() {
-		return nioBuffer();
-	}
+    @Override
+    public void setSize(int writerIndex) {
+        writerIndex(writerIndex);
+    }
 
-	@Override
-	public ByteBuffer getNioBuffer(int index, int length) throws IndexOutOfBoundsException {
-		return nioBuffer(index, length);
-	}
+    @Override
+    public ByteBuffer getNioBufferReadable() {
+        return nioBuffer();
+    }
 
-	@Override
-	public ByteBuffer nioBuffer(int index, int length) {
-		return super.nioBuffer(index, length).asReadOnlyBuffer();
-	}
+    @Override
+    public ByteBuffer getNioBuffer(int index, int length) throws IndexOutOfBoundsException {
+        return nioBuffer(index, length);
+    }
 
-	@Override
-	public boolean isWritable() {
-		return false;
-	}
+    @Override
+    public ByteBuffer nioBuffer(int index, int length) {
+        return super.nioBuffer(index, length).asReadOnlyBuffer();
+    }
 
-	@Override
-	public boolean isWritable(int numBytes) {
-		return false;
-	}
+    @Override
+    public boolean isWritable() {
+        return false;
+    }
 
-	@Override
-	public ByteBuf ensureWritable(int minWritableBytes) {
-		// note: ReadOnlyByteBuf allows this but in most cases this does not make sense
-		if (minWritableBytes != 0) {
-			throw new ReadOnlyBufferException();
-		}
-		return this;
-	}
+    @Override
+    public boolean isWritable(int numBytes) {
+        return false;
+    }
 
-	@Override
-	public void setAllocator(ByteBufAllocator allocator) {
-		getBuffer().setAllocator(allocator);
-	}
+    @Override
+    public ByteBuf ensureWritable(int minWritableBytes) {
+        // note: ReadOnlyByteBuf allows this but in most cases this does not make sense
+        if (minWritableBytes != 0) {
+            throw new ReadOnlyBufferException();
+        }
+        return this;
+    }
 
-	@Override
-	public ByteBuf asByteBuf() {
-		return this;
-	}
+    @Override
+    public void setAllocator(ByteBufAllocator allocator) {
+        getBuffer().setAllocator(allocator);
+    }
 
-	@Override
-	public boolean isCompressed() {
-		return isCompressed;
-	}
+    @Override
+    public ByteBuf asByteBuf() {
+        return this;
+    }
 
-	@Override
-	public void setCompressed(boolean isCompressed) {
-		this.isCompressed = isCompressed;
-	}
+    @Override
+    public boolean isCompressed() {
+        return isCompressed;
+    }
 
-	@Override
-	public DataType getDataType() {
-		return getBuffer().getDataType();
-	}
+    @Override
+    public void setCompressed(boolean isCompressed) {
+        this.isCompressed = isCompressed;
+    }
 
-	@Override
-	public void setDataType(DataType dataType) {
-		throw new ReadOnlyBufferException();
-	}
+    @Override
+    public DataType getDataType() {
+        return dataType;
+    }
 
-	private Buffer getBuffer() {
-		return ((Buffer) unwrap().unwrap());
-	}
+    @Override
+    public void setDataType(DataType dataType) {
+        this.dataType = dataType;
+    }
+
+    private Buffer getBuffer() {
+        return ((Buffer) unwrap().unwrap());
+    }
 }

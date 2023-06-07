@@ -17,33 +17,40 @@
 
 package org.apache.flink.runtime.checkpoint.channel;
 
-import java.io.Closeable;
+import org.apache.flink.runtime.jobgraph.JobVertexID;
+
+import java.io.IOException;
 
 /**
- * Executes {@link ChannelStateWriteRequest}s potentially asynchronously. An exception thrown during the execution
- * should be re-thrown on any next call.
+ * Executes {@link ChannelStateWriteRequest}s potentially asynchronously. An exception thrown during
+ * the execution should be re-thrown on any next call.
  */
-interface ChannelStateWriteRequestExecutor extends Closeable {
+interface ChannelStateWriteRequestExecutor {
 
-	/**
-	 * @throws IllegalStateException if called more than once or after {@link #close()}
-	 */
-	void start() throws IllegalStateException;
+    /** @throws IllegalStateException if called more than once or after {@link #releaseSubtask} */
+    void start() throws IllegalStateException;
 
-	/**
-	 * Send {@link ChannelStateWriteRequest} to this worker. If this method throws an exception then client must
-	 * {@link ChannelStateWriteRequest#cancel cancel} it.
-	 * @throws IllegalStateException if worker is not running
-	 * @throws Exception if any exception occurred during processing this or other items previously
-	 */
-	void submit(ChannelStateWriteRequest r) throws Exception;
+    /**
+     * Send {@link ChannelStateWriteRequest} to this worker. If this method throws an exception then
+     * client must {@link ChannelStateWriteRequest#cancel cancel} it.
+     *
+     * @throws IllegalStateException if worker is not running
+     * @throws Exception if any exception occurred during processing this or other items previously
+     */
+    void submit(ChannelStateWriteRequest r) throws Exception;
 
-	/**
-	 * Send {@link ChannelStateWriteRequest} to this worker to be processed first. If this method throws an exception then client must
-	 * {@link ChannelStateWriteRequest#cancel cancel} it.
-	 * @throws IllegalStateException if worker is not running
-	 * @throws Exception if any exception occurred during processing this or other items previously
-	 */
-	void submitPriority(ChannelStateWriteRequest r) throws Exception;
+    /**
+     * Send {@link ChannelStateWriteRequest} to this worker to be processed first. If this method
+     * throws an exception then client must {@link ChannelStateWriteRequest#cancel cancel} it.
+     *
+     * @throws IllegalStateException if worker is not running
+     * @throws Exception if any exception occurred during processing this or other items previously
+     */
+    void submitPriority(ChannelStateWriteRequest r) throws Exception;
 
+    /** Register subtask. */
+    void registerSubtask(JobVertexID jobVertexID, int subtaskIndex);
+
+    /** Release the subtask. */
+    void releaseSubtask(JobVertexID jobVertexID, int subtaskIndex) throws IOException;
 }

@@ -18,233 +18,286 @@
 
 package org.apache.flink.runtime.dispatcher.runner;
 
-import org.apache.flink.api.common.time.Deadline;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.HighAvailabilityOptions;
+import org.apache.flink.core.testutils.AllCallbackWrapper;
 import org.apache.flink.runtime.blob.BlobServer;
 import org.apache.flink.runtime.blob.BlobUtils;
 import org.apache.flink.runtime.blob.PermanentBlobKey;
 import org.apache.flink.runtime.clusterframework.ApplicationStatus;
 import org.apache.flink.runtime.dispatcher.DispatcherGateway;
 import org.apache.flink.runtime.dispatcher.DispatcherId;
-import org.apache.flink.runtime.dispatcher.MemoryArchivedExecutionGraphStore;
+import org.apache.flink.runtime.dispatcher.DispatcherOperationCaches;
+import org.apache.flink.runtime.dispatcher.MemoryExecutionGraphInfoStore;
 import org.apache.flink.runtime.dispatcher.PartialDispatcherServices;
 import org.apache.flink.runtime.dispatcher.SessionDispatcherFactory;
 import org.apache.flink.runtime.dispatcher.VoidHistoryServerArchivist;
 import org.apache.flink.runtime.heartbeat.TestingHeartbeatServices;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServicesUtils;
+import org.apache.flink.runtime.highavailability.JobResultStore;
 import org.apache.flink.runtime.highavailability.TestingHighAvailabilityServices;
 import org.apache.flink.runtime.highavailability.TestingHighAvailabilityServicesBuilder;
-import org.apache.flink.runtime.highavailability.zookeeper.ZooKeeperRunningJobsRegistry;
+import org.apache.flink.runtime.highavailability.nonha.embedded.EmbeddedJobResultStore;
+import org.apache.flink.runtime.highavailability.zookeeper.CuratorFrameworkWithUnhandledErrorListener;
 import org.apache.flink.runtime.jobgraph.JobGraph;
+import org.apache.flink.runtime.jobgraph.JobGraphTestUtils;
 import org.apache.flink.runtime.jobgraph.JobVertex;
-import org.apache.flink.runtime.jobmanager.JobGraphStoreFactory;
-import org.apache.flink.runtime.jobmanager.ZooKeeperJobGraphStore;
+import org.apache.flink.runtime.jobmanager.JobGraphStore;
+import org.apache.flink.runtime.jobmanager.JobPersistenceComponentFactory;
 import org.apache.flink.runtime.jobmaster.JobResult;
 import org.apache.flink.runtime.leaderelection.TestingLeaderElectionService;
 import org.apache.flink.runtime.metrics.groups.UnregisteredMetricGroups;
 import org.apache.flink.runtime.rpc.TestingRpcService;
-import org.apache.flink.runtime.rpc.TestingRpcServiceResource;
-import org.apache.flink.runtime.testingUtils.TestingUtils;
+import org.apache.flink.runtime.rpc.TestingRpcServiceExtension;
 import org.apache.flink.runtime.testtasks.NoOpInvokable;
 import org.apache.flink.runtime.testutils.CommonTestUtils;
-import org.apache.flink.runtime.util.LeaderConnectionInfo;
 import org.apache.flink.runtime.util.TestingFatalErrorHandler;
 import org.apache.flink.runtime.util.ZooKeeperUtils;
-import org.apache.flink.runtime.zookeeper.ZooKeeperResource;
+import org.apache.flink.runtime.zookeeper.ZooKeeperExtension;
+import org.apache.flink.testutils.TestingUtils;
+import org.apache.flink.testutils.executor.TestExecutorExtension;
+import org.apache.flink.testutils.junit.utils.TempDirUtils;
 import org.apache.flink.util.ExceptionUtils;
-import org.apache.flink.util.TestLogger;
 
-import org.apache.flink.shaded.curator4.org.apache.curator.framework.CuratorFramework;
+import org.apache.flink.shaded.curator5.org.apache.curator.framework.CuratorFramework;
 
-import org.junit.After;
-import org.junit.Before;
-import org.junit.ClassRule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.io.IOException;
-import java.time.Duration;
+import java.nio.file.Path;
+import java.util.Collections;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.ScheduledExecutorService;
 
-import static org.hamcrest.Matchers.emptyArray;
-import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Tests for the interaction between the {@link DefaultDispatcherRunner} and ZooKeeper.
- */
-public class ZooKeeperDefaultDispatcherRunnerTest extends TestLogger {
+/** Tests for the interaction between the {@link DefaultDispatcherRunner} and ZooKeeper. */
+class ZooKeeperDefaultDispatcherRunnerTest {
 
-	private static final Logger LOG = LoggerFactory.getLogger(ZooKeeperDefaultDispatcherRunnerTest.class);
+    private static final Logger LOG =
+            LoggerFactory.getLogger(ZooKeeperDefaultDispatcherRunnerTest.class);
 
-	private static final Time TESTING_TIMEOUT = Time.seconds(10L);
+    private static final Time TESTING_TIMEOUT = Time.seconds(10L);
 
-	private static final Duration VERIFICATION_TIMEOUT = Duration.ofSeconds(10L);
+    @RegisterExtension
+    public static AllCallbackWrapper<ZooKeeperExtension> zooKeeperExtensionWrapper =
+            new AllCallbackWrapper<>(new ZooKeeperExtension());
 
-	@ClassRule
-	public static ZooKeeperResource zooKeeperResource = new ZooKeeperResource();
+    @TempDir public static Path temporaryFolder;
 
-	@ClassRule
-	public static TemporaryFolder temporaryFolder = new TemporaryFolder();
+    @RegisterExtension
+    public static final TestExecutorExtension<ScheduledExecutorService> EXECUTOR_EXTENSION =
+            TestingUtils.defaultExecutorExtension();
 
-	@ClassRule
-	public static TestingRpcServiceResource testingRpcServiceResource = new TestingRpcServiceResource();
+    @RegisterExtension
+    public static AllCallbackWrapper<TestingRpcServiceExtension> testingRpcServiceExtensionWrapper =
+            new AllCallbackWrapper<>(new TestingRpcServiceExtension());
 
-	private BlobServer blobServer;
+    private BlobServer blobServer;
 
-	private TestingFatalErrorHandler fatalErrorHandler;
+    private TestingFatalErrorHandler fatalErrorHandler;
 
-	private File clusterHaStorageDir;
+    private File clusterHaStorageDir;
 
-	private Configuration configuration;
+    private Configuration configuration;
 
-	@Before
-	public void setup() throws IOException {
-		fatalErrorHandler = new TestingFatalErrorHandler();
-		configuration = new Configuration();
-		configuration.setString(HighAvailabilityOptions.HA_MODE, "zookeeper");
-		configuration.setString(HighAvailabilityOptions.HA_ZOOKEEPER_QUORUM, zooKeeperResource.getConnectString());
-		configuration.setString(HighAvailabilityOptions.HA_STORAGE_PATH, temporaryFolder.newFolder().getAbsolutePath());
+    @BeforeEach
+    void setup() throws IOException {
+        fatalErrorHandler = new TestingFatalErrorHandler();
+        configuration = new Configuration();
+        configuration.setString(HighAvailabilityOptions.HA_MODE, "zookeeper");
+        configuration.setString(
+                HighAvailabilityOptions.HA_ZOOKEEPER_QUORUM,
+                zooKeeperExtensionWrapper.getCustomExtension().getConnectString());
+        configuration.setString(
+                HighAvailabilityOptions.HA_STORAGE_PATH,
+                TempDirUtils.newFolder(temporaryFolder).getAbsolutePath());
 
-		clusterHaStorageDir = new File(HighAvailabilityServicesUtils.getClusterHighAvailableStoragePath(configuration).toString());
-		blobServer = new BlobServer(configuration, BlobUtils.createBlobStoreFromConfig(configuration));
-	}
+        clusterHaStorageDir =
+                new File(
+                        HighAvailabilityServicesUtils.getClusterHighAvailableStoragePath(
+                                        configuration)
+                                .toString());
+        blobServer =
+                new BlobServer(
+                        configuration,
+                        TempDirUtils.newFolder(temporaryFolder),
+                        BlobUtils.createBlobStoreFromConfig(configuration));
+    }
 
-	@After
-	public void teardown() throws Exception {
-		if (blobServer != null) {
-			blobServer.close();
-		}
+    @AfterEach
+    void teardown() throws Exception {
+        if (blobServer != null) {
+            blobServer.close();
+        }
 
-		if (fatalErrorHandler != null) {
-			fatalErrorHandler.rethrowError();
-		}
-	}
+        if (fatalErrorHandler != null) {
+            fatalErrorHandler.rethrowError();
+        }
+    }
 
-	/**
-	 * See FLINK-11665.
-	 */
-	@Test
-	public void testResourceCleanupUnderLeadershipChange() throws Exception {
-		final TestingRpcService rpcService = testingRpcServiceResource.getTestingRpcService();
-		final TestingLeaderElectionService dispatcherLeaderElectionService = new TestingLeaderElectionService();
+    /** See FLINK-11665. */
+    @Test
+    void testResourceCleanupUnderLeadershipChange() throws Exception {
+        final TestingRpcService rpcService =
+                testingRpcServiceExtensionWrapper.getCustomExtension().getTestingRpcService();
+        final TestingLeaderElectionService dispatcherLeaderElectionService =
+                new TestingLeaderElectionService();
 
-		final CuratorFramework client = ZooKeeperUtils.startCuratorFramework(configuration);
-		try (final TestingHighAvailabilityServices highAvailabilityServices = new TestingHighAvailabilityServicesBuilder()
-				.setRunningJobsRegistry(new ZooKeeperRunningJobsRegistry(client, configuration))
-				.setDispatcherLeaderElectionService(dispatcherLeaderElectionService)
-				.setJobMasterLeaderRetrieverFunction(jobId -> ZooKeeperUtils.createLeaderRetrievalService(client, configuration))
-				.build()) {
+        try (final CuratorFrameworkWithUnhandledErrorListener curatorFrameworkWrapper =
+                        ZooKeeperUtils.startCuratorFramework(configuration, fatalErrorHandler);
+                final TestingHighAvailabilityServices highAvailabilityServices =
+                        new TestingHighAvailabilityServicesBuilder()
+                                .setDispatcherLeaderElectionService(dispatcherLeaderElectionService)
+                                .setJobMasterLeaderRetrieverFunction(
+                                        jobId ->
+                                                ZooKeeperUtils.createLeaderRetrievalService(
+                                                        curatorFrameworkWrapper
+                                                                .asCuratorFramework()))
+                                .build()) {
 
-			final PartialDispatcherServices partialDispatcherServices = new PartialDispatcherServices(
-				configuration,
-				highAvailabilityServices,
-				CompletableFuture::new,
-				blobServer,
-				new TestingHeartbeatServices(),
-				UnregisteredMetricGroups::createUnregisteredJobManagerMetricGroup,
-				new MemoryArchivedExecutionGraphStore(),
-				fatalErrorHandler,
-				VoidHistoryServerArchivist.INSTANCE,
-				null);
+            final PartialDispatcherServices partialDispatcherServices =
+                    new PartialDispatcherServices(
+                            configuration,
+                            highAvailabilityServices,
+                            CompletableFuture::new,
+                            blobServer,
+                            new TestingHeartbeatServices(),
+                            UnregisteredMetricGroups::createUnregisteredJobManagerMetricGroup,
+                            new MemoryExecutionGraphInfoStore(),
+                            fatalErrorHandler,
+                            VoidHistoryServerArchivist.INSTANCE,
+                            null,
+                            ForkJoinPool.commonPool(),
+                            new DispatcherOperationCaches(),
+                            Collections.emptySet());
 
-			final JobGraph jobGraph = createJobGraphWithBlobs();
+            final DefaultDispatcherRunnerFactory defaultDispatcherRunnerFactory =
+                    DefaultDispatcherRunnerFactory.createSessionRunner(
+                            SessionDispatcherFactory.INSTANCE);
 
-			final DefaultDispatcherRunnerFactory defaultDispatcherRunnerFactory = DefaultDispatcherRunnerFactory.createSessionRunner(SessionDispatcherFactory.INSTANCE);
+            try (final DispatcherRunner dispatcherRunner =
+                    createDispatcherRunner(
+                            rpcService,
+                            dispatcherLeaderElectionService,
+                            new JobPersistenceComponentFactory() {
+                                @Override
+                                public JobGraphStore createJobGraphStore() {
+                                    return createZooKeeperJobGraphStore(
+                                            curatorFrameworkWrapper.asCuratorFramework());
+                                }
 
-			try (final DispatcherRunner dispatcherRunner = createDispatcherRunner(
-				rpcService,
-				dispatcherLeaderElectionService,
-				() -> createZooKeeperJobGraphStore(client),
-				partialDispatcherServices,
-				defaultDispatcherRunnerFactory)) {
+                                @Override
+                                public JobResultStore createJobResultStore() {
+                                    return new EmbeddedJobResultStore();
+                                }
+                            },
+                            partialDispatcherServices,
+                            defaultDispatcherRunnerFactory)) {
 
-				// initial run
-				DispatcherGateway dispatcherGateway = grantLeadership(dispatcherLeaderElectionService);
+                // initial run
+                DispatcherGateway dispatcherGateway =
+                        grantLeadership(dispatcherLeaderElectionService);
 
-				LOG.info("Initial job submission {}.", jobGraph.getJobID());
-				dispatcherGateway.submitJob(jobGraph, TESTING_TIMEOUT).get();
+                final JobGraph jobGraph = createJobGraphWithBlobs();
+                LOG.info("Initial job submission {}.", jobGraph.getJobID());
+                dispatcherGateway.submitJob(jobGraph, TESTING_TIMEOUT).get();
 
-				dispatcherLeaderElectionService.notLeader();
+                dispatcherLeaderElectionService.notLeader();
 
-				// recovering submitted jobs
-				LOG.info("Re-grant leadership first time.");
-				dispatcherGateway = grantLeadership(dispatcherLeaderElectionService);
+                // recovering submitted jobs
+                LOG.info("Re-grant leadership first time.");
+                dispatcherGateway = grantLeadership(dispatcherLeaderElectionService);
 
-				LOG.info("Cancel recovered job {}.", jobGraph.getJobID());
-				// cancellation of the job should remove everything
-				final CompletableFuture<JobResult> jobResultFuture = dispatcherGateway.requestJobResult(jobGraph.getJobID(), TESTING_TIMEOUT);
-				dispatcherGateway.cancelJob(jobGraph.getJobID(), TESTING_TIMEOUT).get();
+                LOG.info("Cancel recovered job {}.", jobGraph.getJobID());
+                // cancellation of the job should remove everything
+                final CompletableFuture<JobResult> jobResultFuture =
+                        dispatcherGateway.requestJobResult(jobGraph.getJobID(), TESTING_TIMEOUT);
+                dispatcherGateway.cancelJob(jobGraph.getJobID(), TESTING_TIMEOUT).get();
 
-				// a successful cancellation should eventually remove all job information
-				final JobResult jobResult = jobResultFuture.get();
+                // a successful cancellation should eventually remove all job information
+                final JobResult jobResult = jobResultFuture.get();
 
-				assertThat(jobResult.getApplicationStatus(), is(ApplicationStatus.CANCELED));
+                assertThat(jobResult.getApplicationStatus()).isEqualTo(ApplicationStatus.CANCELED);
 
-				dispatcherLeaderElectionService.notLeader();
+                dispatcherLeaderElectionService.notLeader();
 
-				// check that the job has been removed from ZooKeeper
-				final ZooKeeperJobGraphStore submittedJobGraphStore = createZooKeeperJobGraphStore(client);
+                // check that the job has been removed from ZooKeeper
+                final JobGraphStore submittedJobGraphStore =
+                        createZooKeeperJobGraphStore(curatorFrameworkWrapper.asCuratorFramework());
 
-				CommonTestUtils.waitUntilCondition(() -> submittedJobGraphStore.getJobIds().isEmpty(), Deadline.fromNow(VERIFICATION_TIMEOUT), 20L);
-			}
-		}
+                CommonTestUtils.waitUntilCondition(
+                        () -> submittedJobGraphStore.getJobIds().isEmpty(), 20L);
+            }
+        }
 
-		// check resource clean up
-		assertThat(clusterHaStorageDir.listFiles(), is(emptyArray()));
-	}
+        // check resource clean up
+        assertThat(clusterHaStorageDir).isEmptyDirectory();
+    }
 
-	private DispatcherRunner createDispatcherRunner(
-			TestingRpcService rpcService,
-			TestingLeaderElectionService dispatcherLeaderElectionService,
-			JobGraphStoreFactory jobGraphStoreFactory,
-			PartialDispatcherServices partialDispatcherServices,
-			DispatcherRunnerFactory dispatcherRunnerFactory) throws Exception {
-		return dispatcherRunnerFactory.createDispatcherRunner(
-				dispatcherLeaderElectionService,
-				fatalErrorHandler,
-				jobGraphStoreFactory,
-				TestingUtils.defaultExecutor(),
-				rpcService,
-				partialDispatcherServices);
-	}
+    private DispatcherRunner createDispatcherRunner(
+            TestingRpcService rpcService,
+            TestingLeaderElectionService dispatcherLeaderElectionService,
+            JobPersistenceComponentFactory jobPersistenceComponentFactory,
+            PartialDispatcherServices partialDispatcherServices,
+            DispatcherRunnerFactory dispatcherRunnerFactory)
+            throws Exception {
+        return dispatcherRunnerFactory.createDispatcherRunner(
+                dispatcherLeaderElectionService,
+                fatalErrorHandler,
+                jobPersistenceComponentFactory,
+                EXECUTOR_EXTENSION.getExecutor(),
+                rpcService,
+                partialDispatcherServices);
+    }
 
-	private ZooKeeperJobGraphStore createZooKeeperJobGraphStore(CuratorFramework client) {
-		try {
-			return ZooKeeperUtils.createJobGraphs(client, configuration);
-		} catch (Exception e) {
-			ExceptionUtils.rethrow(e);
-			return null;
-		}
-	}
+    private JobGraphStore createZooKeeperJobGraphStore(CuratorFramework client) {
+        try {
+            return ZooKeeperUtils.createJobGraphs(client, configuration);
+        } catch (Exception e) {
+            ExceptionUtils.rethrow(e);
+            return null;
+        }
+    }
 
-	private DispatcherGateway grantLeadership(TestingLeaderElectionService dispatcherLeaderElectionService) throws InterruptedException, java.util.concurrent.ExecutionException {
-		final UUID leaderSessionId = UUID.randomUUID();
-		dispatcherLeaderElectionService.isLeader(leaderSessionId);
-		final LeaderConnectionInfo leaderConnectionInfo = dispatcherLeaderElectionService.getConfirmationFuture().get();
+    private DispatcherGateway grantLeadership(
+            TestingLeaderElectionService dispatcherLeaderElectionService)
+            throws InterruptedException, java.util.concurrent.ExecutionException {
+        return dispatcherLeaderElectionService
+                .isLeader(UUID.randomUUID())
+                .thenCompose(
+                        leaderInformation ->
+                                testingRpcServiceExtensionWrapper
+                                        .getCustomExtension()
+                                        .getTestingRpcService()
+                                        .connect(
+                                                leaderInformation.getLeaderAddress(),
+                                                DispatcherId.fromUuid(
+                                                        leaderInformation.getLeaderSessionID()),
+                                                DispatcherGateway.class))
+                .get();
+    }
 
-		return testingRpcServiceResource.getTestingRpcService().connect(
-			leaderConnectionInfo.getAddress(),
-			DispatcherId.fromUuid(leaderSessionId),
-			DispatcherGateway.class).get();
-	}
+    private JobGraph createJobGraphWithBlobs() throws IOException {
+        final JobVertex vertex = new JobVertex("test vertex");
+        vertex.setInvokableClass(NoOpInvokable.class);
+        vertex.setParallelism(1);
 
-	private JobGraph createJobGraphWithBlobs() throws IOException {
-		final JobVertex vertex = new JobVertex("test vertex");
-		vertex.setInvokableClass(NoOpInvokable.class);
-		vertex.setParallelism(1);
+        final JobGraph jobGraph = JobGraphTestUtils.streamingJobGraph(vertex);
+        final PermanentBlobKey permanentBlobKey =
+                blobServer.putPermanent(jobGraph.getJobID(), new byte[256]);
+        jobGraph.addUserJarBlobKey(permanentBlobKey);
 
-		final JobGraph jobGraph = new JobGraph("Test job graph", vertex);
-		final PermanentBlobKey permanentBlobKey = blobServer.putPermanent(jobGraph.getJobID(), new byte[256]);
-		jobGraph.addUserJarBlobKey(permanentBlobKey);
-
-		return jobGraph;
-	}
-
+        return jobGraph;
+    }
 }

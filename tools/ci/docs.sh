@@ -17,16 +17,25 @@
 # limitations under the License.
 ################################################################################
 
-CACHE_DIR=$HOME/gem_cache ./docs/build_docs.sh -p &
+HUGO_REPO=https://github.com/gohugoio/hugo/releases/download/v0.110.0/hugo_extended_0.110.0_Linux-64bit.tar.gz
+HUGO_ARTIFACT=hugo_extended_0.110.0_Linux-64bit.tar.gz
 
-for i in `seq 1 30`;
-do
-	echo "Waiting for server..."
-	curl -Is http://localhost:4000 --fail
-	if [ $? -eq 0 ]; then
-		break
-	fi
-	sleep 10
-done
+if ! curl --fail -OL $HUGO_REPO ; then 
+	echo "Failed to download Hugo binary"
+	exit 1
+fi
 
-./docs/check_links.sh
+tar -zxvf $HUGO_ARTIFACT
+
+git submodule update --init --recursive
+# Setup the external documentation modules
+cd docs
+source setup_docs.sh
+cd ..
+# Build the docs
+./hugo --source docs
+
+if [ $? -ne 0 ]; then
+	echo "Error building the docs"
+	exit 1
+fi

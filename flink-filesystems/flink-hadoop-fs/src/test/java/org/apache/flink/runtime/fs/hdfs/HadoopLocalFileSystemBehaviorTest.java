@@ -27,48 +27,44 @@ import org.apache.flink.core.fs.local.LocalFileSystem;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.RawLocalFileSystem;
 import org.apache.hadoop.util.VersionInfo;
-import org.junit.Assume;
-import org.junit.Rule;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.io.TempDir;
 
-/**
- * Behavior tests for HDFS.
- */
-public class HadoopLocalFileSystemBehaviorTest extends FileSystemBehaviorTestSuite {
+import static org.assertj.core.api.Assumptions.assumeThat;
 
-	@Rule
-	public final TemporaryFolder tmp = new TemporaryFolder();
+/** Behavior tests for HDFS. */
+class HadoopLocalFileSystemBehaviorTest extends FileSystemBehaviorTestSuite {
 
-	@Override
-	public FileSystem getFileSystem() throws Exception {
-		org.apache.hadoop.fs.FileSystem fs = new RawLocalFileSystem();
-		fs.initialize(LocalFileSystem.getLocalFsURI(), new Configuration());
-		return new HadoopFileSystem(fs);
-	}
+    @TempDir private java.nio.file.Path tmp;
 
-	@Override
-	public Path getBasePath() throws Exception {
-		return new Path(tmp.newFolder().toURI());
-	}
+    @Override
+    protected FileSystem getFileSystem() throws Exception {
+        org.apache.hadoop.fs.FileSystem fs = new RawLocalFileSystem();
+        fs.initialize(LocalFileSystem.getLocalFsURI(), new Configuration());
+        return new HadoopFileSystem(fs);
+    }
 
-	@Override
-	public FileSystemKind getFileSystemKind() {
-		return FileSystemKind.FILE_SYSTEM;
-	}
+    @Override
+    protected Path getBasePath() throws Exception {
+        return new Path(tmp.toUri());
+    }
 
-	// ------------------------------------------------------------------------
+    @Override
+    protected FileSystemKind getFileSystemKind() {
+        return FileSystemKind.FILE_SYSTEM;
+    }
 
-	/**
-	 * This test needs to be skipped for earlier Hadoop versions because those
-	 * have a bug.
-	 */
-	@Override
-	public void testMkdirsFailsForExistingFile() throws Exception {
-		final String versionString = VersionInfo.getVersion();
-		final String prefix = versionString.substring(0, 3);
-		final float version = Float.parseFloat(prefix);
-		Assume.assumeTrue("Cannot execute this test on Hadoop prior to 2.8", version >= 2.8f);
+    // ------------------------------------------------------------------------
 
-		super.testMkdirsFailsForExistingFile();
-	}
+    /** This test needs to be skipped for earlier Hadoop versions because those have a bug. */
+    @Override
+    protected void testMkdirsFailsForExistingFile() throws Exception {
+        final String versionString = VersionInfo.getVersion();
+        final String prefix = versionString.substring(0, 3);
+        final float version = Float.parseFloat(prefix);
+        assumeThat(version)
+                .describedAs("Cannot execute this test on Hadoop prior to 2.8")
+                .isGreaterThanOrEqualTo(2.8f);
+
+        super.testMkdirsFailsForExistingFile();
+    }
 }

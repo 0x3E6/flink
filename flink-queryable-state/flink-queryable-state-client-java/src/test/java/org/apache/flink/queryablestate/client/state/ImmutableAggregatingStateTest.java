@@ -24,85 +24,79 @@ import org.apache.flink.api.common.state.AggregatingState;
 import org.apache.flink.api.common.state.AggregatingStateDescriptor;
 import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
 
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/**
- * Tests the {@link ImmutableAggregatingStateTest}.
- */
-public class ImmutableAggregatingStateTest {
+/** Tests the {@link ImmutableAggregatingStateTest}. */
+class ImmutableAggregatingStateTest {
 
-	private final AggregatingStateDescriptor<Long, String, String> aggrStateDesc =
-			new AggregatingStateDescriptor<>(
-					"test",
-					new SumAggr(),
-					String.class);
+    private final AggregatingStateDescriptor<Long, String, String> aggrStateDesc =
+            new AggregatingStateDescriptor<>("test", new SumAggr(), String.class);
 
-	private AggregatingState<Long, String> aggrState;
+    private AggregatingState<Long, String> aggrState;
 
-	@Before
-	public void setUp() throws Exception {
-		if (!aggrStateDesc.isSerializerInitialized()) {
-			aggrStateDesc.initializeSerializerUnlessSet(new ExecutionConfig());
-		}
+    @BeforeEach
+    void setUp() throws Exception {
+        if (!aggrStateDesc.isSerializerInitialized()) {
+            aggrStateDesc.initializeSerializerUnlessSet(new ExecutionConfig());
+        }
 
-		final String initValue = "42";
+        final String initValue = "42";
 
-		ByteArrayOutputStream out = new ByteArrayOutputStream();
-		aggrStateDesc.getSerializer().serialize(initValue, new DataOutputViewStreamWrapper(out));
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        aggrStateDesc.getSerializer().serialize(initValue, new DataOutputViewStreamWrapper(out));
 
-		aggrState = ImmutableAggregatingState.createState(
-				aggrStateDesc,
-				out.toByteArray()
-		);
-	}
+        aggrState = ImmutableAggregatingState.createState(aggrStateDesc, out.toByteArray());
+    }
 
-	@Test(expected = UnsupportedOperationException.class)
-	public void testUpdate() throws Exception {
-		String value = aggrState.get();
-		assertEquals("42", value);
+    @Test
+    void testUpdate() throws Exception {
+        String value = aggrState.get();
+        assertThat(value).isEqualTo("42");
+        assertThatThrownBy(() -> aggrState.add(54L))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
 
-		aggrState.add(54L);
-	}
+    @Test
+    void testClear() throws Exception {
+        String value = aggrState.get();
+        assertThat(value).isEqualTo("42");
+        assertThatThrownBy(() -> aggrState.clear())
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
 
-	@Test(expected = UnsupportedOperationException.class)
-	public void testClear() throws Exception {
-		String value = aggrState.get();
-		assertEquals("42", value);
+    /**
+     * Test {@link AggregateFunction} concatenating the already stored string with the long passed
+     * as argument.
+     */
+    private static class SumAggr implements AggregateFunction<Long, String, String> {
 
-		aggrState.clear();
-	}
+        private static final long serialVersionUID = -6249227626701264599L;
 
-	/**
-	 * Test {@link AggregateFunction} concatenating the already stored string with the long passed as argument.
-	 */
-	private static class SumAggr implements AggregateFunction<Long, String, String> {
+        @Override
+        public String createAccumulator() {
+            return "";
+        }
 
-		private static final long serialVersionUID = -6249227626701264599L;
+        @Override
+        public String add(Long value, String accumulator) {
+            accumulator += ", " + value;
+            return accumulator;
+        }
 
-		@Override
-		public String createAccumulator() {
-			return "";
-		}
+        @Override
+        public String getResult(String accumulator) {
+            return accumulator;
+        }
 
-		@Override
-		public String add(Long value, String accumulator) {
-			accumulator += ", " + value;
-			return accumulator;
-		}
-
-		@Override
-		public String getResult(String accumulator) {
-			return accumulator;
-		}
-
-		@Override
-		public String merge(String a, String b) {
-			return a + ", " + b;
-		}
-	}
+        @Override
+        public String merge(String a, String b) {
+            return a + ", " + b;
+        }
+    }
 }

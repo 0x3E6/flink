@@ -18,13 +18,22 @@
 
 package org.apache.flink.table.operations;
 
-/**
- * Operation to describe a SHOW VIEWS statement.
- */
+import org.apache.flink.table.api.internal.TableResultInternal;
+
+import static org.apache.flink.table.api.internal.TableResultUtils.buildStringArrayResult;
+
+/** Operation to describe a SHOW VIEWS statement. */
 public class ShowViewsOperation implements ShowOperation {
 
-	@Override
-	public String asSummaryString() {
-		return "SHOW VIEWS";
-	}
+    @Override
+    public String asSummaryString() {
+        return "SHOW VIEWS";
+    }
+
+    @Override
+    public TableResultInternal execute(Context ctx) {
+        String[] views =
+                ctx.getCatalogManager().listViews().stream().sorted().toArray(String[]::new);
+        return buildStringArrayResult("view name", views);
+    }
 }

@@ -23,57 +23,56 @@ import org.apache.flink.runtime.rest.handler.cluster.JobManagerLogListHandler;
 import org.apache.flink.runtime.rest.messages.EmptyMessageParameters;
 import org.apache.flink.runtime.rest.messages.EmptyRequestBody;
 import org.apache.flink.runtime.rest.messages.LogListInfo;
-import org.apache.flink.runtime.rest.messages.MessageHeaders;
+import org.apache.flink.runtime.rest.messages.RuntimeMessageHeaders;
 
 import org.apache.flink.shaded.netty4.io.netty.handler.codec.http.HttpResponseStatus;
 
-/**
- * Headers for the {@link JobManagerLogListHandler}.
- */
-public class JobManagerLogListHeaders implements MessageHeaders<EmptyRequestBody, LogListInfo, EmptyMessageParameters> {
+/** Headers for the {@link JobManagerLogListHandler}. */
+public class JobManagerLogListHeaders
+        implements RuntimeMessageHeaders<EmptyRequestBody, LogListInfo, EmptyMessageParameters> {
 
-	private static final JobManagerLogListHeaders INSTANCE = new JobManagerLogListHeaders();
+    private static final JobManagerLogListHeaders INSTANCE = new JobManagerLogListHeaders();
 
-	private static final String URL = "/jobmanager/logs";
+    private static final String URL = "/jobmanager/logs";
 
-	private JobManagerLogListHeaders() {}
+    private JobManagerLogListHeaders() {}
 
-	public static JobManagerLogListHeaders getInstance() {
-		return INSTANCE;
-	}
+    public static JobManagerLogListHeaders getInstance() {
+        return INSTANCE;
+    }
 
-	@Override
-	public Class<LogListInfo> getResponseClass() {
-		return LogListInfo.class;
-	}
+    @Override
+    public Class<LogListInfo> getResponseClass() {
+        return LogListInfo.class;
+    }
 
-	@Override
-	public HttpResponseStatus getResponseStatusCode() {
-		return HttpResponseStatus.OK;
-	}
+    @Override
+    public HttpResponseStatus getResponseStatusCode() {
+        return HttpResponseStatus.OK;
+    }
 
-	@Override
-	public String getDescription() {
-		return "Returns the list of log files on the JobManager.";
-	}
+    @Override
+    public String getDescription() {
+        return "Returns the list of log files on the JobManager.";
+    }
 
-	@Override
-	public Class<EmptyRequestBody> getRequestClass() {
-		return EmptyRequestBody.class;
-	}
+    @Override
+    public Class<EmptyRequestBody> getRequestClass() {
+        return EmptyRequestBody.class;
+    }
 
-	@Override
-	public EmptyMessageParameters getUnresolvedMessageParameters() {
-		return EmptyMessageParameters.getInstance();
-	}
+    @Override
+    public EmptyMessageParameters getUnresolvedMessageParameters() {
+        return EmptyMessageParameters.getInstance();
+    }
 
-	@Override
-	public HttpMethodWrapper getHttpMethod() {
-		return HttpMethodWrapper.GET;
-	}
+    @Override
+    public HttpMethodWrapper getHttpMethod() {
+        return HttpMethodWrapper.GET;
+    }
 
-	@Override
-	public String getTargetRestEndpointURL() {
-		return URL;
-	}
+    @Override
+    public String getTargetRestEndpointURL() {
+        return URL;
+    }
 }

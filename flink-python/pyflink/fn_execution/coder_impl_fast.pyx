@@ -19,666 +19,1024 @@
 # cython: infer_types = True
 # cython: profile=True
 # cython: boundscheck=False, wraparound=False, initializedcheck=False, cdivision=True
-
-from libc.stdlib cimport free, malloc, realloc
-from libc.string cimport memcpy
+from libc.stdint cimport int32_t, int64_t
+from libc.stdlib cimport free, malloc
 
 import datetime
 import decimal
-from pyflink.table import Row
+import pickle
+from typing import List, Union
 
-cdef class BaseCoderImpl:
-    cpdef void encode_to_stream(self, value, LengthPrefixOutputStream output_stream):
-        pass
+import cloudpickle
+import avro.schema as avro_schema
 
-    cpdef decode_from_stream(self, LengthPrefixInputStream input_stream):
-        pass
+from pyflink.common import Row, RowKind
+from pyflink.common.time import Instant
+from pyflink.datastream.window import CountWindow, TimeWindow, GlobalWindow
+from pyflink.fn_execution.formats.avro import FlinkAvroDecoder, FlinkAvroDatumReader, \
+    FlinkAvroBufferWrapper, FlinkAvroEncoder, FlinkAvroDatumWriter
+from pyflink.fn_execution.ResettableIO import ResettableIO
+from pyflink.table.utils import pandas_to_arrow, arrow_to_pandas
 
-cdef class TableFunctionRowCoderImpl(FlattenRowCoderImpl):
-    def __init__(self, flatten_row_coder):
-        super(TableFunctionRowCoderImpl, self).__init__(flatten_row_coder._field_coders)
-        self._end_message = <char*> malloc(1)
-        self._end_message[0] = 0x00
+ROW_KIND_BIT_SIZE = 2
 
-    cpdef void encode_to_stream(self, iter_value, LengthPrefixOutputStream output_stream):
-        if iter_value:
-            for value in iter_value:
-                if self._field_count == 1:
-                    value = (value,)
-                self._encode_one_row(value, output_stream)
-        # write 0x00 as end message
-        output_stream.write(self._end_message, 1)
+cdef class InternalRow:
+    def __cinit__(self, list values, InternalRowKind row_kind):
+        self.values = values
+        self.row_kind = row_kind
+        self.field_names = []
 
-    def __dealloc__(self):
-        if self._end_message:
-            free(self._end_message)
+    cpdef object to_row(self):
+        row = Row()
+        row._values = self.values
+        row.set_field_names(self.field_names)
+        row.set_row_kind(RowKind(self.row_kind))
+        return row
 
-cdef class FlattenRowCoderImpl(BaseCoderImpl):
-    def __init__(self, field_coders):
-        self._field_coders = field_coders
-        self._field_count = len(self._field_coders)
-        self._field_type = <TypeName*> malloc(self._field_count * sizeof(TypeName))
-        self._field_coder_type = <CoderType*> malloc(
-            self._field_count * sizeof(CoderType))
-        self._leading_complete_bytes_num = self._field_count // 8
-        self._remaining_bits_num = self._field_count % 8
-        self._tmp_output_buffer_size = 1024
-        self._tmp_output_pos = 0
-        self._tmp_output_data = <char*> malloc(self._tmp_output_buffer_size)
-        self._null_byte_search_table = <unsigned char*> malloc(8 * sizeof(unsigned char))
-        self._null_mask = <bint*> malloc(self._field_count * sizeof(bint))
-        self._init_attribute()
-        self.row = [None for _ in range(self._field_count)]
+    @staticmethod
+    def from_row(row: Row) -> InternalRow:
+        cdef InternalRow internal_row
+        internal_row = InternalRow(row._values, row.get_row_kind().value)
+        internal_row.field_names = row._fields
+        return internal_row
 
-    cpdef void encode_to_stream(self, value, LengthPrefixOutputStream output_stream):
-        self._encode_one_row(value, output_stream)
+    cdef bint is_retract_msg(self):
+        return self.row_kind == InternalRowKind.UPDATE_BEFORE or \
+           self.row_kind == InternalRowKind.DELETE
 
-    cpdef decode_from_stream(self, LengthPrefixInputStream input_stream):
-        self._decode_next_row(input_stream)
-        return self.row
+    cdef bint is_accumulate_msg(self):
+        return self.row_kind == InternalRowKind.UPDATE_AFTER or \
+           self.row_kind == InternalRowKind.INSERT
 
-    cdef void _init_attribute(self):
-        self._null_byte_search_table[0] = 0x80
-        self._null_byte_search_table[1] = 0x40
-        self._null_byte_search_table[2] = 0x20
-        self._null_byte_search_table[3] = 0x10
-        self._null_byte_search_table[4] = 0x08
-        self._null_byte_search_table[5] = 0x04
-        self._null_byte_search_table[6] = 0x02
-        self._null_byte_search_table[7] = 0x01
-        for i in range(self._field_count):
-            self._field_type[i] = self._field_coders[i].type_name()
-            self._field_coder_type[i] = self._field_coders[i].coder_type()
+    def __eq__(self, other):
+        if not other:
+            return False
+        return self.values == other.values
 
-    cdef void _encode_one_row(self, value, LengthPrefixOutputStream output_stream):
-        cdef size_t i
-        self._write_null_mask(value, self._leading_complete_bytes_num, self._remaining_bits_num)
-        for i in range(self._field_count):
-            item = value[i]
-            if item is not None:
-                if self._field_coder_type[i] == SIMPLE:
-                    self._encode_field_simple(self._field_type[i], item)
-                else:
-                    self._encode_field_complex(self._field_type[i], self._field_coders[i], item)
+    def __getitem__(self, item):
+        return self.values[item]
 
-        output_stream.write(self._tmp_output_data, self._tmp_output_pos)
-        self._tmp_output_pos = 0
+    def __iter__(self):
+        return iter(self.values)
 
-    cdef void _read_null_mask(self, bint*null_mask,
-                              size_t input_leading_complete_bytes_num,
-                              size_t input_remaining_bits_num):
+    def __repr__(self):
+        return "InternalRow(%s, %s)" % (self.row_kind, self.values)
+
+cdef class MaskUtils:
+    """
+    A util class used to encode mask value.
+    """
+
+    def __cinit__(self, field_count):
+        self._mask = <bint*> malloc((field_count + ROW_KIND_BIT_SIZE) * sizeof(bint))
+        if self._mask == NULL:
+            raise MemoryError()
+
+        self._mask_byte_search_table = <unsigned char*> malloc(8 * sizeof(unsigned char))
+        if self._mask_byte_search_table == NULL:
+            raise MemoryError()
+        self._mask_byte_search_table[0] = 0x80
+        self._mask_byte_search_table[1] = 0x40
+        self._mask_byte_search_table[2] = 0x20
+        self._mask_byte_search_table[3] = 0x10
+        self._mask_byte_search_table[4] = 0x08
+        self._mask_byte_search_table[5] = 0x04
+        self._mask_byte_search_table[6] = 0x02
+        self._mask_byte_search_table[7] = 0x01
+
+        self._row_kind_byte_table = <unsigned char*> malloc(8 * sizeof(unsigned char))
+        if self._row_kind_byte_table == NULL:
+            raise MemoryError()
+        self._row_kind_byte_table[0] = 0x00
+        self._row_kind_byte_table[1] = 0x80
+        self._row_kind_byte_table[2] = 0x40
+        self._row_kind_byte_table[3] = 0xC0
+
+    def __init__(self, field_count):
+        self._field_count = field_count
+        self._leading_complete_bytes_num = (self._field_count + ROW_KIND_BIT_SIZE) // 8
+        self._remaining_bits_num = (self._field_count + ROW_KIND_BIT_SIZE) % 8
+
+    cdef void write_mask(self, list value, unsigned char row_kind_value,
+                         OutputStream output_stream):
+        cdef size_t field_pos, index, i
+        cdef unsigned char*bit_map_byte_search_table
+        cdef unsigned char b
+        field_pos = 0
+        bit_map_byte_search_table = self._mask_byte_search_table
+
+        # first byte contains the row kind bits
+        b = self._row_kind_byte_table[row_kind_value]
+        for i in range(0, 8 - ROW_KIND_BIT_SIZE):
+            if field_pos + i < self._field_count and value[field_pos + i] is None:
+                b |= bit_map_byte_search_table[i + ROW_KIND_BIT_SIZE]
+        field_pos += 8 - ROW_KIND_BIT_SIZE
+        output_stream.write_byte(b)
+
+        for _ in range(1, self._leading_complete_bytes_num):
+            b = 0x00
+            for i in range(8):
+                if value[field_pos + i] is None:
+                    b |= bit_map_byte_search_table[i]
+            field_pos += 8
+            output_stream.write_byte(b)
+
+        if self._leading_complete_bytes_num >= 1 and self._remaining_bits_num:
+            b = 0x00
+            for i in range(self._remaining_bits_num):
+                if value[field_pos + i] is None:
+                    b |= bit_map_byte_search_table[i]
+            output_stream.write_byte(b)
+
+    cdef bint*read_mask(self, InputStream input_stream):
         cdef size_t field_pos, i
         cdef unsigned char b
         field_pos = 0
-        for _ in range(input_leading_complete_bytes_num):
-            b = self._input_data[self._input_pos]
-            self._input_pos += 1
+        for _ in range(self._leading_complete_bytes_num):
+            b = input_stream.read_byte()
             for i in range(8):
-                null_mask[field_pos] = (b & self._null_byte_search_table[i]) > 0
+                self._mask[field_pos] = (b & self._mask_byte_search_table[i]) > 0
                 field_pos += 1
 
-        if input_remaining_bits_num:
-            b = self._input_data[self._input_pos]
-            self._input_pos += 1
-            for i in range(input_remaining_bits_num):
-                null_mask[field_pos] = (b & self._null_byte_search_table[i]) > 0
+        if self._remaining_bits_num:
+            b = input_stream.read_byte()
+            for i in range(self._remaining_bits_num):
+                self._mask[field_pos] = (b & self._mask_byte_search_table[i]) > 0
                 field_pos += 1
-
-    cdef void _decode_next_row(self, LengthPrefixInputStream input_stream):
-        cdef size_t i
-        cdef size_t length
-        length = input_stream.read(&self._input_data)
-        self._input_pos = 0
-        self._read_null_mask(self._null_mask, self._leading_complete_bytes_num,
-                             self._remaining_bits_num)
-        for i in range(self._field_count):
-            if self._null_mask[i]:
-                self.row[i] = None
-            else:
-                if self._field_coder_type[i] == SIMPLE:
-                    self.row[i] = self._decode_field_simple(self._field_type[i])
-                else:
-                    self.row[i] = self._decode_field_complex(self._field_type[i],
-                                                             self._field_coders[i])
-
-    cdef object _decode_field(self, CoderType coder_type, TypeName field_type,
-                              FieldCoder field_coder):
-        if coder_type == SIMPLE:
-            return self._decode_field_simple(field_type)
-        else:
-            return self._decode_field_complex(field_type, field_coder)
-
-    cdef object _decode_field_simple(self, TypeName field_type):
-        cdef libc.stdint.int32_t value, minutes, seconds, hours
-        cdef libc.stdint.int64_t milliseconds
-        if field_type == TINYINT:
-            # tinyint
-            return self._decode_byte()
-        elif field_type == SMALLINT:
-            # smallint
-            return self._decode_smallint()
-        elif field_type == INT:
-            # int
-            return self._decode_int()
-        elif field_type == BIGINT:
-            # bigint
-            return self._decode_bigint()
-        elif field_type == BOOLEAN:
-            # boolean
-            return not not self._decode_byte()
-        elif field_type == FLOAT:
-            # float
-            return self._decode_float()
-        elif field_type == DOUBLE:
-            # double
-            return self._decode_double()
-        elif field_type == BINARY:
-            # bytes
-            return self._decode_bytes()
-        elif field_type == CHAR:
-            # str
-            return self._decode_bytes().decode("utf-8")
-        elif field_type == DATE:
-            # Date
-            # EPOCH_ORDINAL = datetime.datetime(1970, 1, 1).toordinal()
-            # The value of EPOCH_ORDINAL is 719163
-            return datetime.date.fromordinal(self._decode_int() + 719163)
-        elif field_type == TIME:
-            # Time
-            value = self._decode_int()
-            seconds = value // 1000
-            milliseconds = value % 1000
-            minutes = seconds // 60
-            seconds %= 60
-            hours = minutes // 60
-            minutes %= 60
-            return datetime.time(hours, minutes, seconds, milliseconds * 1000)
-
-    cdef object _decode_field_complex(self, TypeName field_type, FieldCoder field_coder):
-        cdef libc.stdint.int32_t nanoseconds, microseconds, seconds, length
-        cdef libc.stdint.int32_t i, row_field_count, leading_complete_bytes_num, remaining_bits_num
-        cdef libc.stdint.int64_t milliseconds
-        cdef bint*null_mask
-        cdef FieldCoder value_coder, key_coder
-        cdef TypeName value_type, key_type
-        cdef CoderType value_coder_type, key_coder_type
-        cdef list row_field_coders
-
-        if field_type == DECIMAL:
-            # decimal
-            user_context = decimal.getcontext()
-            decimal.setcontext((<DecimalCoderImpl> field_coder).context)
-            result = decimal.Decimal((self._decode_bytes()).decode("utf-8")).quantize(
-                (<DecimalCoderImpl> field_coder).scale_format)
-            decimal.setcontext(user_context)
-            return result
-        elif field_type == TIMESTAMP:
-            # Timestamp
-            if (<TimeCoderImpl> field_coder).is_compact:
-                milliseconds = self._decode_bigint()
-                nanoseconds = 0
-            else:
-                milliseconds = self._decode_bigint()
-                nanoseconds = self._decode_int()
-            seconds, microseconds = (milliseconds // 1000,
-                                     milliseconds % 1000 * 1000 + nanoseconds // 1000)
-            return datetime.datetime.utcfromtimestamp(seconds).replace(microsecond=microseconds)
-        elif field_type == LOCAL_ZONED_TIMESTAMP:
-            # LOCAL_ZONED_TIMESTAMP
-            if (<LocalZonedTimestampCoderImpl> field_coder).is_compact:
-                milliseconds = self._decode_bigint()
-                nanoseconds = 0
-            else:
-                milliseconds = self._decode_bigint()
-                nanoseconds = self._decode_int()
-            seconds, microseconds = (milliseconds // 1000,
-                                     milliseconds % 1000 * 1000 + nanoseconds // 1000)
-            return (<LocalZonedTimestampCoderImpl> field_coder).timezone.localize(
-                datetime.datetime.utcfromtimestamp(seconds).replace(microsecond=microseconds))
-        elif field_type == ARRAY:
-            # Array
-            length = self._decode_int()
-            value_coder = (<ArrayCoderImpl> field_coder).elem_coder
-            value_type = value_coder.type_name()
-            value_coder_type = value_coder.coder_type()
-            return [
-                self._decode_field(value_coder_type, value_type, value_coder) if self._decode_byte()
-                else None for _ in range(length)]
-        elif field_type == MAP:
-            # Map
-            key_coder = (<MapCoderImpl> field_coder).key_coder
-            key_type = key_coder.type_name()
-            key_coder_type = key_coder.coder_type()
-            value_coder = (<MapCoderImpl> field_coder).value_coder
-            value_type = value_coder.type_name()
-            value_coder_type = value_coder.coder_type()
-            length = self._decode_int()
-            map_value = {}
-            for _ in range(length):
-                key = self._decode_field(key_coder_type, key_type, key_coder)
-                if self._decode_byte():
-                    map_value[key] = None
-                else:
-                    map_value[key] = self._decode_field(value_coder_type, value_type, value_coder)
-            return map_value
-        elif field_type == ROW:
-            # Row
-            row_field_coders = (<RowCoderImpl> field_coder).field_coders
-            row_field_count = len(row_field_coders)
-            null_mask = <bint*> malloc(row_field_count * sizeof(bint))
-            leading_complete_bytes_num = row_field_count // 8
-            remaining_bits_num = row_field_count % 8
-            self._read_null_mask(null_mask, leading_complete_bytes_num, remaining_bits_num)
-            row = Row(*[None if null_mask[i] else
-                        self._decode_field(
-                            row_field_coders[i].coder_type(),
-                            row_field_coders[i].type_name(),
-                            row_field_coders[i])
-                        for i in range(row_field_count)])
-            free(null_mask)
-            return row
-
-    cdef unsigned char _decode_byte(self) except? -1:
-        self._input_pos += 1
-        return <unsigned char> self._input_data[self._input_pos - 1]
-
-    cdef libc.stdint.int16_t _decode_smallint(self) except? -1:
-        self._input_pos += 2
-        return (<unsigned char> self._input_data[self._input_pos - 1]
-                | <libc.stdint.uint32_t> <unsigned char> self._input_data[self._input_pos - 2] << 8)
-
-    cdef libc.stdint.int32_t _decode_int(self) except? -1:
-        self._input_pos += 4
-        return (<unsigned char> self._input_data[self._input_pos - 1]
-                | <libc.stdint.uint32_t> <unsigned char> self._input_data[self._input_pos - 2] << 8
-                | <libc.stdint.uint32_t> <unsigned char> self._input_data[self._input_pos - 3] << 16
-                | <libc.stdint.uint32_t> <unsigned char> self._input_data[
-                    self._input_pos - 4] << 24)
-
-    cdef libc.stdint.int64_t _decode_bigint(self) except? -1:
-        self._input_pos += 8
-        return (<unsigned char> self._input_data[self._input_pos - 1]
-                | <libc.stdint.uint64_t> <unsigned char> self._input_data[self._input_pos - 2] << 8
-                | <libc.stdint.uint64_t> <unsigned char> self._input_data[self._input_pos - 3] << 16
-                | <libc.stdint.uint64_t> <unsigned char> self._input_data[self._input_pos - 4] << 24
-                | <libc.stdint.uint64_t> <unsigned char> self._input_data[self._input_pos - 5] << 32
-                | <libc.stdint.uint64_t> <unsigned char> self._input_data[self._input_pos - 6] << 40
-                | <libc.stdint.uint64_t> <unsigned char> self._input_data[self._input_pos - 7] << 48
-                | <libc.stdint.uint64_t> <unsigned char> self._input_data[
-                    self._input_pos - 8] << 56)
-
-    cdef float _decode_float(self) except? -1:
-        cdef libc.stdint.int32_t as_long = self._decode_int()
-        return (<float*> <char*> &as_long)[0]
-
-    cdef double _decode_double(self) except? -1:
-        cdef libc.stdint.int64_t as_long = self._decode_bigint()
-        return (<double*> <char*> &as_long)[0]
-
-    cdef bytes _decode_bytes(self):
-        cdef libc.stdint.int32_t size = self._decode_int()
-        self._input_pos += size
-        return self._input_data[self._input_pos - size: self._input_pos]
-
-    cdef void _encode_field(self, CoderType coder_type, TypeName field_type, FieldCoder field_coder,
-                            item):
-        if coder_type == SIMPLE:
-            self._encode_field_simple(field_type, item)
-        else:
-            self._encode_field_complex(field_type, field_coder, item)
-
-    cdef void _encode_field_simple(self, TypeName field_type, item):
-        cdef libc.stdint.int32_t hour, minute, seconds, microsecond, milliseconds
-        cdef bytes item_bytes
-        if field_type == TINYINT:
-            # tinyint
-            self._encode_byte(item)
-        elif field_type == SMALLINT:
-            # smallint
-            self._encode_smallint(item)
-        elif field_type == INT:
-            # int
-            self._encode_int(item)
-        elif field_type == BIGINT:
-            # bigint
-            self._encode_bigint(item)
-        elif field_type == BOOLEAN:
-            # boolean
-            self._encode_byte(item)
-        elif field_type == FLOAT:
-            # float
-            self._encode_float(item)
-        elif field_type == DOUBLE:
-            # double
-            self._encode_double(item)
-        elif field_type == BINARY:
-            # bytes
-            self._encode_bytes(item, len(item))
-        elif field_type == CHAR:
-            # str
-            item_bytes = item.encode('utf-8')
-            self._encode_bytes(item_bytes, len(item_bytes))
-        elif field_type == DATE:
-            # Date
-            # EPOCH_ORDINAL = datetime.datetime(1970, 1, 1).toordinal()
-            # The value of EPOCH_ORDINAL is 719163
-            self._encode_int(item.toordinal() - 719163)
-        elif field_type == TIME:
-            # Time
-            hour = item.hour
-            minute = item.minute
-            seconds = item.second
-            microsecond = item.microsecond
-            milliseconds = hour * 3600000 + minute * 60000 + seconds * 1000 + microsecond // 1000
-            self._encode_int(milliseconds)
-
-    cdef void _encode_field_complex(self, TypeName field_type, FieldCoder field_coder, item):
-        cdef libc.stdint.int32_t nanoseconds, microseconds_of_second, length, row_field_count
-        cdef libc.stdint.int32_t leading_complete_bytes_num, remaining_bits_num
-        cdef libc.stdint.int64_t timestamp_milliseconds, timestamp_seconds
-        cdef FieldCoder value_coder, key_coder
-        cdef TypeName value_type, key_type
-        cdef CoderType value_coder_type, key_coder_type
-        cdef FieldCoder row_field_coder
-        cdef list row_field_coders, row_value
-
-        if field_type == DECIMAL:
-            # decimal
-            user_context = decimal.getcontext()
-            decimal.setcontext((<DecimalCoderImpl> field_coder).context)
-            bytes_value = str(item.quantize((<DecimalCoderImpl> field_coder).scale_format)).encode(
-                "utf-8")
-            self._encode_bytes(bytes_value, len(bytes_value))
-            decimal.setcontext(user_context)
-        elif field_type == TIMESTAMP or field_type == LOCAL_ZONED_TIMESTAMP:
-            # Timestamp
-            timestamp_seconds = <libc.stdint.int64_t> (
-                item.replace(tzinfo=datetime.timezone.utc).timestamp())
-            microseconds_of_second = item.microsecond
-            timestamp_milliseconds = timestamp_seconds * 1000 + microseconds_of_second // 1000
-            nanoseconds = microseconds_of_second % 1000 * 1000
-            if field_coder.is_compact:
-                self._encode_bigint(timestamp_milliseconds)
-            else:
-                self._encode_bigint(timestamp_milliseconds)
-                self._encode_int(nanoseconds)
-        elif field_type == ARRAY:
-            # Array
-            length = len(item)
-            value_coder = (<ArrayCoderImpl> field_coder).elem_coder
-            value_type = value_coder.type_name()
-            value_coder_type = value_coder.coder_type()
-            self._encode_int(length)
-            for i in range(length):
-                value = item[i]
-                if value is None:
-                    self._encode_byte(False)
-                else:
-                    self._encode_byte(True)
-                    self._encode_field(value_coder_type, value_type, value_coder, value)
-        elif field_type == MAP:
-            # Map
-            length = len(item)
-            self._encode_int(length)
-            iter_items = item.items()
-            key_coder = (<MapCoderImpl> field_coder).key_coder
-            key_type = key_coder.type_name()
-            key_coder_type = key_coder.coder_type()
-            value_coder = (<MapCoderImpl> field_coder).value_coder
-            value_type = value_coder.type_name()
-            value_coder_type = value_coder.coder_type()
-            for iter_item in iter_items:
-                key = iter_item[0]
-                value = iter_item[1]
-                self._encode_field(key_coder_type, key_type, key_coder, key)
-                if value is None:
-                    self._encode_byte(True)
-                else:
-                    self._encode_byte(False)
-                    self._encode_field(value_coder_type, value_type, value_coder, value)
-        elif field_type == ROW:
-            # Row
-            row_field_coders = (<RowCoderImpl> field_coder).field_coders
-            row_field_count = len(row_field_coders)
-            leading_complete_bytes_num = row_field_count // 8
-            remaining_bits_num = row_field_count % 8
-            row_value = list(item)
-            self._write_null_mask(row_value, leading_complete_bytes_num, remaining_bits_num)
-            for i in range(row_field_count):
-                field_item = row_value[i]
-                row_field_coder = row_field_coders[i]
-                if field_item is not None:
-                    self._encode_field(row_field_coder.coder_type(), row_field_coder.type_name(),
-                                       row_field_coder, field_item)
-
-    cdef void _extend(self, size_t missing):
-        while self._tmp_output_buffer_size < self._tmp_output_pos + missing:
-            self._tmp_output_buffer_size *= 2
-        self._tmp_output_data = <char*> realloc(self._tmp_output_data, self._tmp_output_buffer_size)
-
-    cdef void _encode_byte(self, unsigned char val):
-        if self._tmp_output_buffer_size < self._tmp_output_pos + 1:
-            self._extend(1)
-        self._tmp_output_data[self._tmp_output_pos] = val
-        self._tmp_output_pos += 1
-
-    cdef void _encode_smallint(self, libc.stdint.int16_t v):
-        if self._tmp_output_buffer_size < self._tmp_output_pos + 2:
-            self._extend(2)
-        self._tmp_output_data[self._tmp_output_pos] = <unsigned char> (v >> 8)
-        self._tmp_output_data[self._tmp_output_pos + 1] = <unsigned char> v
-        self._tmp_output_pos += 2
-
-    cdef void _encode_int(self, libc.stdint.int32_t v):
-        if self._tmp_output_buffer_size < self._tmp_output_pos + 4:
-            self._extend(4)
-        self._tmp_output_data[self._tmp_output_pos] = <unsigned char> (v >> 24)
-        self._tmp_output_data[self._tmp_output_pos + 1] = <unsigned char> (v >> 16)
-        self._tmp_output_data[self._tmp_output_pos + 2] = <unsigned char> (v >> 8)
-        self._tmp_output_data[self._tmp_output_pos + 3] = <unsigned char> v
-        self._tmp_output_pos += 4
-
-    cdef void _encode_bigint(self, libc.stdint.int64_t v):
-        if self._tmp_output_buffer_size < self._tmp_output_pos + 8:
-            self._extend(8)
-        self._tmp_output_data[self._tmp_output_pos] = <unsigned char> (v >> 56)
-        self._tmp_output_data[self._tmp_output_pos + 1] = <unsigned char> (v >> 48)
-        self._tmp_output_data[self._tmp_output_pos + 2] = <unsigned char> (v >> 40)
-        self._tmp_output_data[self._tmp_output_pos + 3] = <unsigned char> (v >> 32)
-        self._tmp_output_data[self._tmp_output_pos + 4] = <unsigned char> (v >> 24)
-        self._tmp_output_data[self._tmp_output_pos + 5] = <unsigned char> (v >> 16)
-        self._tmp_output_data[self._tmp_output_pos + 6] = <unsigned char> (v >> 8)
-        self._tmp_output_data[self._tmp_output_pos + 7] = <unsigned char> v
-        self._tmp_output_pos += 8
-
-    cdef void _encode_float(self, float v):
-        self._encode_int((<libc.stdint.int32_t*> <char*> &v)[0])
-
-    cdef void _encode_double(self, double v):
-        self._encode_bigint((<libc.stdint.int64_t*> <char*> &v)[0])
-
-    cdef void _encode_bytes(self, char*b, size_t length):
-        self._encode_int(length)
-        if self._tmp_output_buffer_size < self._tmp_output_pos + length:
-            self._extend(length)
-        if length < 8:
-            # This is faster than memcpy when the string is short.
-            for i in range(length):
-                self._tmp_output_data[self._tmp_output_pos + i] = b[i]
-        else:
-            memcpy(self._tmp_output_data + self._tmp_output_pos, b, length)
-        self._tmp_output_pos += length
-
-    cdef void _write_null_mask(self, value, size_t leading_complete_bytes_num,
-                               size_t remaining_bits_num):
-        cdef size_t field_pos, index
-        cdef unsigned char*null_byte_search_table
-        cdef unsigned char b, i
-        field_pos = 0
-        null_byte_search_table = self._null_byte_search_table
-        for _ in range(leading_complete_bytes_num):
-            b = 0x00
-            for i in range(8):
-                if value[field_pos + i] is None:
-                    b |= null_byte_search_table[i]
-            field_pos += 8
-            self._encode_byte(b)
-
-        if remaining_bits_num:
-            b = 0x00
-            for i in range(remaining_bits_num):
-                if value[field_pos + i] is None:
-                    b |= null_byte_search_table[i]
-            self._encode_byte(b)
+        return self._mask
 
     def __dealloc__(self):
-        if self._null_mask:
-            free(self._null_mask)
-        if self._null_byte_search_table:
-            free(self._null_byte_search_table)
-        if self._tmp_output_data:
-            free(self._tmp_output_data)
-        if self._field_type:
-            free(self._field_type)
-        if self._field_coder_type:
-            free(self._field_coder_type)
+        if self._mask != NULL:
+            free(self._mask)
+        if self._mask_byte_search_table != NULL:
+            free(self._mask_byte_search_table)
+        if self._row_kind_byte_table != NULL:
+            free(self._row_kind_byte_table)
 
-cdef class FieldCoder:
-    cpdef CoderType coder_type(self):
-        return UNDEFINED
+cdef class LengthPrefixBaseCoderImpl:
+    """
+    LengthPrefixBaseCoderImpl will be used in Operations and other coders will be the field coder of
+    LengthPrefixBaseCoderImpl.
+    """
 
-    cpdef TypeName type_name(self):
-        return NONE
+    def __init__(self, field_coder: FieldCoderImpl):
+        self._field_coder = field_coder
+        self._data_out_stream = OutputStream()
 
-cdef class TinyIntCoderImpl(FieldCoder):
-    cpdef CoderType coder_type(self):
-        return SIMPLE
+    cpdef encode_to_stream(self, value, LengthPrefixOutputStream output_stream):
+        pass
 
-    cpdef TypeName type_name(self):
-        return TINYINT
+    cpdef decode_from_stream(self, LengthPrefixInputStream input_stream):
+        pass
 
-cdef class SmallIntCoderImpl(FieldCoder):
-    cpdef CoderType coder_type(self):
-        return SIMPLE
-    cpdef TypeName type_name(self):
-        return SMALLINT
+    cdef void _write_data_to_output_stream(self, LengthPrefixOutputStream output_stream):
+        cdef OutputStream data_out_stream
+        data_out_stream = self._data_out_stream
+        output_stream.write(data_out_stream.buffer, data_out_stream.pos)
+        data_out_stream.pos = 0
 
-cdef class IntCoderImpl(FieldCoder):
-    cpdef CoderType coder_type(self):
-        return SIMPLE
+cdef class FieldCoderImpl:
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        """
+        Encodes `value` to the output stream.
 
-    cpdef TypeName type_name(self):
-        return INT
+        :param value: The output data
+        :param out_stream: Output Stream
+        """
+        pass
 
-cdef class BigIntCoderImpl(FieldCoder):
-    cpdef CoderType coder_type(self):
-        return SIMPLE
-    cpdef TypeName type_name(self):
-        return BIGINT
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        """
+        Decodes data from the input stream.
 
-cdef class BooleanCoderImpl(FieldCoder):
-    cpdef CoderType coder_type(self):
-        return SIMPLE
-    cpdef TypeName type_name(self):
-        return BOOLEAN
+        :param in_stream: Input Stream
+        :param size: The size data of input stream will be decoded. If the size is set 0, it means
+        the coder won't take use of the length to decode the data from input stream.
+        :return: The decoded object.
+        """
+        pass
 
-cdef class FloatCoderImpl(FieldCoder):
-    cpdef CoderType coder_type(self):
-        return SIMPLE
-    cpdef TypeName type_name(self):
-        return FLOAT
+    cpdef bytes encode(self, value):
+        """
+        Encodes `value` to a bytes
 
-cdef class DoubleCoderImpl(FieldCoder):
-    cpdef CoderType coder_type(self):
-        return SIMPLE
-    cpdef TypeName type_name(self):
-        return DOUBLE
+        :param value: The output data
+        :return: The encoded data.
+        """
+        cdef OutputStream out_stream
+        out_stream = OutputStream()
+        self.encode_to_stream(value, out_stream)
+        return out_stream.buffer[0:out_stream.pos]
 
-cdef class BinaryCoderImpl(FieldCoder):
-    cpdef CoderType coder_type(self):
-        return SIMPLE
-    cpdef TypeName type_name(self):
-        return BINARY
+    cpdef decode(self, encoded):
+        """
+        Decodes an object from the bytes
 
-cdef class CharCoderImpl(FieldCoder):
-    cpdef CoderType coder_type(self):
-        return SIMPLE
-    cpdef TypeName type_name(self):
-        return CHAR
+        :param encoded: The bytes
+        :return: The decoded object.
+        """
+        cdef InputStream input_stream
+        input_stream = InputStream()
+        input_stream._input_data = <char*> encoded
+        return self.decode_from_stream(input_stream, len(encoded))
 
-cdef class DateCoderImpl(FieldCoder):
-    cpdef CoderType coder_type(self):
-        return SIMPLE
+cdef class InputStreamWrapper:
+    def __cinit__(self, value_coder: ValueCoderImpl, input_stream: LengthPrefixInputStream):
+        self._value_coder = value_coder
+        self._input_stream = input_stream
 
-    cpdef TypeName type_name(self):
-        return DATE
+    cpdef bint has_next(self):
+        return self._input_stream.available()
 
-cdef class TimeCoderImpl(FieldCoder):
-    cpdef CoderType coder_type(self):
-        return SIMPLE
+    cpdef next(self):
+        return self._value_coder.decode_from_stream(self._input_stream)
 
-    cpdef TypeName type_name(self):
-        return TIME
+cdef class IterableCoderImpl(LengthPrefixBaseCoderImpl):
+    """
+    Encodes iterable data to output stream. The output mode will decide whether write a special end
+    message 0x00 to output stream after encoding data.
+    """
 
-cdef class DecimalCoderImpl(FieldCoder):
-    def __cinit__(self, precision, scale):
-        self.context = decimal.Context(prec=precision)
-        self.scale_format = decimal.Decimal(10) ** -scale
+    def __cinit__(self, *args, **kwargs):
+        self._end_message = <char*> malloc(1)
+        if self._end_message == NULL:
+            raise MemoryError()
+        self._end_message[0] = 0x00
 
-    cpdef CoderType coder_type(self):
-        return COMPLEX
+    def __init__(self, field_coder: FieldCoderImpl, separated_with_end_message: bool):
+        super(IterableCoderImpl, self).__init__(field_coder)
+        self._separated_with_end_message = separated_with_end_message
 
-    cpdef TypeName type_name(self):
-        return DECIMAL
+    cpdef encode_to_stream(self, value, LengthPrefixOutputStream output_stream):
+        if value:
+            for item in value:
+                self._field_coder.encode_to_stream(item, self._data_out_stream)
+                self._write_data_to_output_stream(output_stream)
 
-cdef class TimestampCoderImpl(FieldCoder):
+        # write end message
+        if self._separated_with_end_message:
+            output_stream.write(self._end_message, 1)
+
+    cpdef decode_from_stream(self, LengthPrefixInputStream input_stream):
+        return InputStreamWrapper(ValueCoderImpl(self._field_coder), input_stream)
+
+    def __dealloc__(self):
+        if self._end_message != NULL:
+            free(self._end_message)
+
+cdef class ValueCoderImpl(LengthPrefixBaseCoderImpl):
+    """
+    Encodes a single data to output stream.
+    """
+
+    def __init__(self, field_coder: FieldCoderImpl):
+        super(ValueCoderImpl, self).__init__(field_coder)
+
+    cpdef encode_to_stream(self, value, LengthPrefixOutputStream output_stream):
+        self._field_coder.encode_to_stream(value, self._data_out_stream)
+        self._write_data_to_output_stream(output_stream)
+
+    cpdef decode_from_stream(self, LengthPrefixInputStream input_stream):
+        cdef char*input_data
+        cdef char*temp
+        cdef size_t size
+        cdef long long addr
+        cdef InputStream data_input_stream
+        # set input_data pointer to the input data
+        size = input_stream.read(&input_data)
+
+        # create InputStream
+        data_input_stream = InputStream()
+        data_input_stream._input_data = input_data
+
+        return self._field_coder.decode_from_stream(data_input_stream, size)
+
+cdef class FlattenRowCoderImpl(FieldCoderImpl):
+    """
+    A coder for flatten row (List) object (without field names and row kind value is 0).
+    """
+
+    def __init__(self, field_coders: List[FieldCoderImpl]):
+        self._field_coders = field_coders  # type: List[FieldCoderImpl]
+        self._field_count = len(self._field_coders)
+        self._mask_utils = MaskUtils(self._field_count)
+        self._reuse_flatten_row = [None for i in range(self._field_count)]
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        cdef list list_value, field_coders
+        cdef size_t i
+        cdef FieldCoderImpl field_coder
+
+        list_value = <list?> value
+
+        # encode mask value
+        self._mask_utils.write_mask(list_value, 0, out_stream)
+
+        # encode every field value
+        field_coders = self._field_coders
+        for i in range(self._field_count):
+            item = list_value[i]
+            if item is not None:
+                field_coder = <FieldCoderImpl> field_coders[i]
+                field_coder.encode_to_stream(item, out_stream)
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        cdef bint*mask
+        cdef size_t i
+        cdef list flatten_row, field_coders
+        cdef FieldCoderImpl field_coder
+
+        # read mask
+        mask = self._mask_utils.read_mask(in_stream)
+        # skip ROW_KIND_BIT_SIZE to data mask
+        (<bint**> &mask)[0] += ROW_KIND_BIT_SIZE
+
+        # decode field data
+        flatten_row = self._reuse_flatten_row
+        field_coders = self._field_coders
+        for i in range(self._field_count):
+            if mask[i]:
+                flatten_row[i] = None
+            else:
+                field_coder = <FieldCoderImpl> field_coders[i]
+                flatten_row[i] = field_coder.decode_from_stream(in_stream, 0)
+        return flatten_row
+
+    def __repr__(self):
+        return 'FlattenRowCoderImpl[%s]' % ', '.join(str(c) for c in self._field_coders)
+
+cdef class RowCoderImpl(FieldCoderImpl):
+    """
+    A coder for `Row` or `InternalRow` object.
+    """
+
+    def __init__(self, field_coders: List[FieldCoderImpl], field_names: List[str]):
+        self._field_coders = field_coders  # type: List[FieldCoderImpl]
+        self._field_count = len(self._field_coders)
+        self._field_names = field_names  # type: List[str]
+        self._mask_utils = MaskUtils(self._field_count)
+
+    cpdef encode_to_stream(self, value: Union[Row, InternalRow], OutputStream out_stream):
+        cdef list list_values
+        cdef size_t i
+        cdef unsigned char row_kind_value
+        cdef FieldCoderImpl field_coder
+
+        if isinstance(value, InternalRow):
+            # the type is InternalRow
+            list_values = <list> value.values
+            row_kind_value = <unsigned char> value.row_kind
+        else:
+            # the type is Row
+            list_values = <list> value.get_fields_by_names(self._field_names)
+            row_kind_value = <unsigned char> value.get_row_kind().value
+        # encode mask value
+        self._mask_utils.write_mask(list_values, row_kind_value, out_stream)
+
+        # encode every field value
+        for i in range(self._field_count):
+            item = list_values[i]
+            if item is not None:
+                field_coder = <FieldCoderImpl> self._field_coders[i]
+                field_coder.encode_to_stream(item, out_stream)
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        cdef bint*mask
+        cdef unsigned char row_kind_value = 0
+        cdef size_t i
+        cdef FieldCoderImpl field_coder
+        cdef list field_values
+        mask = self._mask_utils.read_mask(in_stream)
+        field_values = []
+        for i in range(self._field_count):
+            if mask[i + ROW_KIND_BIT_SIZE]:
+                field_values.append(None)
+            else:
+                field_coder = <FieldCoderImpl> self._field_coders[i]
+                field_values.append(field_coder.decode_from_stream(in_stream, 0))
+        row = Row()
+        row._values = field_values
+        for i in range(ROW_KIND_BIT_SIZE):
+            row_kind_value += mask[i] * 2 ** i
+        row.set_field_names(self._field_names)
+        row.set_row_kind(RowKind(row_kind_value))
+        return row
+
+    def __repr__(self):
+        return 'RowCoderImpl[%s, %s]' % \
+               (', '.join(str(c) for c in self._field_coders), self._field_names)
+
+cdef class ArrowCoderImpl(FieldCoderImpl):
+    """
+    A coder for arrow format data.
+    """
+
+    def __init__(self, schema, row_type, timezone):
+        self._schema = schema
+        self._field_types = row_type.field_types()
+        self._timezone = timezone
+        self._resettable_io = ResettableIO()
+        self._batch_reader = self._load_from_stream(self._resettable_io)
+
+    cpdef encode_to_stream(self, cols, OutputStream out_stream):
+        import pyarrow as pa
+
+        self._resettable_io.set_output_stream(out_stream)
+        batch_writer = pa.RecordBatchStreamWriter(self._resettable_io, self._schema)
+        batch_writer.write_batch(
+            pandas_to_arrow(self._schema, self._timezone, self._field_types, cols))
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        return self.decode_one_batch_from_stream(in_stream, size)
+
+    cdef list decode_one_batch_from_stream(self, InputStream in_stream, size_t size):
+        self._resettable_io.set_input_bytes(in_stream.read(size))
+        # there is only one arrow batch in the underlying input stream
+        return arrow_to_pandas(self._timezone, self._field_types, [next(self._batch_reader)])
+
+    def _load_from_stream(self, stream):
+        import pyarrow as pa
+
+        while stream.readable():
+            reader = pa.ipc.open_stream(stream)
+            yield reader.read_next_batch()
+
+    def __repr__(self):
+        return 'ArrowCoderImpl[%s]' % self._schema
+
+cdef class OverWindowArrowCoderImpl(FieldCoderImpl):
+    """
+    A coder for over window with arrow format data.
+    The data structure: [window data][arrow format data].
+    """
+    def __init__(self, arrow_coder_impl: ArrowCoderImpl):
+        self._arrow_coder = arrow_coder_impl
+        self._int_coder = IntCoderImpl()
+
+    cpdef encode_to_stream(self, cols, OutputStream out_stream):
+        self._arrow_coder.encode_to_stream(cols, out_stream)
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        cdef int32_t window_num, window_size
+        cdef list window_boundaries_and_arrow_data
+        window_num = self._int_coder.decode_from_stream(in_stream, 0)
+        size -= 4
+        window_boundaries_and_arrow_data = []
+        for _ in range(window_num):
+            window_size = self._int_coder.decode_from_stream(in_stream, 0)
+            size -= 4
+            window_boundaries_and_arrow_data.append(
+                [self._int_coder.decode_from_stream(in_stream, 0)
+                 for _ in range(window_size)])
+            size -= 4 * window_size
+        window_boundaries_and_arrow_data.append(
+            self._arrow_coder.decode_one_batch_from_stream(in_stream, size))
+        return window_boundaries_and_arrow_data
+
+    def __repr__(self):
+        return 'OverWindowArrowCoderImpl[%s]' % self._arrow_coder
+
+
+cdef class TinyIntCoderImpl(FieldCoderImpl):
+    """
+    A coder for tiny int value (from -128 to 127).
+    """
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        out_stream.write_int8(value)
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        return in_stream.read_int8()
+
+cdef class SmallIntCoderImpl(FieldCoderImpl):
+    """
+    A coder for small int value (from -32,768 to 32,767).
+    """
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        out_stream.write_int16(value)
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        return in_stream.read_int16()
+
+cdef class IntCoderImpl(FieldCoderImpl):
+    """
+    A coder for int value (from -2,147,483,648 to 2,147,483,647).
+    """
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        out_stream.write_int32(value)
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        return in_stream.read_int32()
+
+cdef class BigIntCoderImpl(FieldCoderImpl):
+    """
+    A coder for big int value (from -9,223,372,036,854,775,808 to 9,223,372,036,854,775,807).
+    """
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        out_stream.write_int64(value)
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        return in_stream.read_int64()
+
+cdef class BooleanCoderImpl(FieldCoderImpl):
+    """
+    A coder for a boolean value.
+    """
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        out_stream.write_byte(value)
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        return not not in_stream.read_byte()
+
+cdef class FloatCoderImpl(FieldCoderImpl):
+    """
+    A coder for a float value (4-byte single precision floating point number).
+    """
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        out_stream.write_float(value)
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        return in_stream.read_float()
+
+cdef class DoubleCoderImpl(FieldCoderImpl):
+    """
+    A coder for a double value (8-byte double precision floating point number).
+    """
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        out_stream.write_double(value)
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        return in_stream.read_double()
+
+cdef class BinaryCoderImpl(FieldCoderImpl):
+    """
+    A coder for a bytes value.
+    """
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        out_stream.write_bytes(value, len(value))
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        return in_stream.read_bytes()
+
+cdef class CharCoderImpl(FieldCoderImpl):
+    """
+    A coder for a str value.
+    """
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        cdef bytes value_bytes = value.encode('utf-8')
+        out_stream.write_bytes(value_bytes, len(value_bytes))
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        return in_stream.read_bytes().decode("utf-8")
+
+cdef class BigDecimalCoderImpl(FieldCoderImpl):
+    """
+    A coder for a big decimal value (without fixed precision and scale).
+    """
+
+    def __init__(self):
+        self._value_coder = CharCoderImpl()
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        self._value_coder.encode_to_stream(str(value), out_stream)
+
+    cpdef decode_from_stream(self, InputStream input_stream, size_t size):
+        return decimal.Decimal(self._value_coder.decode_from_stream(input_stream, 0))
+
+cdef class DecimalCoderImpl(FieldCoderImpl):
+    """
+    A coder for a decimal value (with fixed precision and scale).
+    """
+
+    def __init__(self, precision, scale):
+        self._context = decimal.Context(prec=precision)
+        self._scale_format = decimal.Decimal(10) ** -scale
+        self._value_coder = CharCoderImpl()
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        user_context = decimal.getcontext()
+        decimal.setcontext(self._context)
+        self._value_coder.encode_to_stream(str(value.quantize(self._scale_format)), out_stream)
+        decimal.setcontext(user_context)
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        user_context = decimal.getcontext()
+        decimal.setcontext(self._context)
+        result = decimal.Decimal(self._value_coder.decode_from_stream(in_stream, 0)) \
+            .quantize(self._scale_format)
+        decimal.setcontext(user_context)
+        return result
+
+cdef class DateCoderImpl(FieldCoderImpl):
+    """
+    A coder for a datetime.date value.
+    """
+
+    def __init__(self):
+        self._EPOCH_ORDINAL = datetime.datetime(1970, 1, 1).toordinal()
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        out_stream.write_int32(value.toordinal() - self._EPOCH_ORDINAL)
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        return datetime.date.fromordinal(in_stream.read_int32() + self._EPOCH_ORDINAL)
+
+cdef class TimeCoderImpl(FieldCoderImpl):
+    """
+    A coder for a datetime.time value.
+    """
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        cdef int32_t hour, minute, seconds, microsecond, milliseconds
+        hour = value.hour
+        minute = value.minute
+        seconds = value.second
+        microsecond = value.microsecond
+        milliseconds = hour * 3600000 + minute * 60000 + seconds * 1000 + microsecond // 1000
+        out_stream.write_int32(milliseconds)
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        cdef int32_t value, seconds, milliseconds, minutes, hours
+        value = in_stream.read_int32()
+        seconds = value // 1000
+        milliseconds = value % 1000
+        minutes = seconds // 60
+        seconds %= 60
+        hours = minutes // 60
+        minutes %= 60
+        return datetime.time(hours, minutes, seconds, milliseconds * 1000)
+
+cdef class TimestampCoderImpl(FieldCoderImpl):
+    """
+    A coder for a datetime.datetime value.
+    """
+
     def __init__(self, precision):
-        self.is_compact = precision <= 3
+        self._is_compact = precision <= 3
 
-    cpdef CoderType coder_type(self):
-        return COMPLEX
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        cdef int32_t microseconds_of_second, nanoseconds
+        cdef int64_t timestamp_seconds, timestamp_milliseconds
+        timestamp_seconds = <int64_t> (value.replace(tzinfo=datetime.timezone.utc).timestamp())
+        microseconds_of_second = value.microsecond
+        timestamp_milliseconds = timestamp_seconds * 1000 + microseconds_of_second // 1000
+        nanoseconds = microseconds_of_second % 1000 * 1000
+        if self._is_compact:
+            out_stream.write_int64(timestamp_milliseconds)
+        else:
+            out_stream.write_int64(timestamp_milliseconds)
+            out_stream.write_int32(nanoseconds)
 
-    cpdef TypeName type_name(self):
-        return TIMESTAMP
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        return self._decode_timestamp_data_from_stream(in_stream)
+
+    cdef _decode_timestamp_data_from_stream(self, InputStream in_stream):
+        cdef int64_t milliseconds
+        cdef int32_t nanoseconds, seconds, microseconds
+        if self._is_compact:
+            milliseconds = in_stream.read_int64()
+            nanoseconds = 0
+        else:
+            milliseconds = in_stream.read_int64()
+            nanoseconds = in_stream.read_int32()
+        seconds = milliseconds // 1000
+        microseconds = milliseconds % 1000 * 1000 + nanoseconds // 1000
+        return datetime.datetime.utcfromtimestamp(seconds).replace(microsecond=microseconds)
 
 cdef class LocalZonedTimestampCoderImpl(TimestampCoderImpl):
+    """
+    A coder for a datetime.datetime with time zone value.
+    """
+
     def __init__(self, precision, timezone):
         super(LocalZonedTimestampCoderImpl, self).__init__(precision)
-        self.timezone = timezone
+        self._timezone = timezone
 
-    cpdef CoderType coder_type(self):
-        return COMPLEX
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        return self._timezone.localize(self._decode_timestamp_data_from_stream(in_stream))
 
-    cpdef TypeName type_name(self):
-        return LOCAL_ZONED_TIMESTAMP
+cdef class InstantCoderImpl(FieldCoderImpl):
+    """
+    A coder for Instant.
+    """
 
-cdef class ArrayCoderImpl(FieldCoder):
-    def __cinit__(self, elem_coder):
-        self.elem_coder = elem_coder
+    def __init__(self):
+        self._null_seconds = -9223372036854775808
+        self._null_nanos = -2147483648
 
-    cpdef CoderType coder_type(self):
-        return COMPLEX
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        if value is None:
+            out_stream.write_int64(self._null_seconds)
+            out_stream.write_int32(self._null_nanos)
+        else:
+            out_stream.write_int64(value.seconds)
+            out_stream.write_int32(value.nanos)
 
-    cpdef TypeName type_name(self):
-        return ARRAY
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        cdef int64_t seconds
+        cdef int32_t nanos
+        seconds = in_stream.read_int64()
+        nanos = in_stream.read_int32()
+        if seconds == self._null_seconds and nanos == self._null_nanos:
+            return None
+        else:
+            return Instant(seconds, nanos)
 
-cdef class MapCoderImpl(FieldCoder):
-    def __cinit__(self, key_coder, value_coder):
-        self.key_coder = key_coder
-        self.value_coder = value_coder
 
-    cpdef CoderType coder_type(self):
-        return COMPLEX
+cdef class CloudPickleCoderImpl(FieldCoderImpl):
+    """
+    A coder used with cloudpickle for all kinds of python object.
+    """
 
-    cpdef TypeName type_name(self):
-        return MAP
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        cdef bytes pickled_bytes
+        pickled_bytes = cloudpickle.dumps(value)
+        out_stream.write_bytes(pickled_bytes, len(pickled_bytes))
 
-cdef class RowCoderImpl(FieldCoder):
-    def __cinit__(self, field_coders):
-        self.field_coders = field_coders
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        cdef bytes pickled_bytes
+        pickled_bytes = in_stream.read_bytes()
+        return cloudpickle.loads(pickled_bytes)
 
-    cpdef CoderType coder_type(self):
-        return COMPLEX
 
-    cpdef TypeName type_name(self):
-        return ROW
+cdef class PickleCoderImpl(FieldCoderImpl):
+    """
+    A coder used with pickle for all kinds of python object.
+    """
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        cdef bytes pickled_bytes
+        pickled_bytes = pickle.dumps(value)
+        out_stream.write_bytes(pickled_bytes, len(pickled_bytes))
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        cdef bytes pickled_bytes
+        pickled_bytes = in_stream.read_bytes()
+        return pickle.loads(pickled_bytes)
+
+cdef class GenericArrayCoderImpl(FieldCoderImpl):
+    """
+    A coder for basic array value (the element of array could be null).
+    """
+
+    def __init__(self, elem_coder: FieldCoderImpl):
+        self._elem_coder = elem_coder
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        cdef int32_t length, i
+        cdef list list_value = value
+        length = len(value)
+        out_stream.write_int32(length)
+        for i in range(length):
+            item = list_value[i]
+            if item is None:
+                out_stream.write_byte(False)
+            else:
+                out_stream.write_byte(True)
+                self._elem_coder.encode_to_stream(item, out_stream)
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        cdef int32_t length
+        length = in_stream.read_int32()
+        return [self._elem_coder.decode_from_stream(in_stream, 0) if in_stream.read_byte()
+                else None for _ in range(length)]
+
+cdef class PrimitiveArrayCoderImpl(FieldCoderImpl):
+    """
+    A coder for primitive array value (the element of array won't be null).
+    """
+
+    def __init__(self, elem_coder: FieldCoderImpl):
+        self._elem_coder = elem_coder
+
+    cpdef encode_to_stream(self, value, OutputStream output_stream):
+        cdef int32_t length, i
+        cdef list list_value = value
+        length = len(value)
+        output_stream.write_int32(length)
+        for i in range(length):
+            self._elem_coder.encode_to_stream(list_value[i], output_stream)
+
+    cpdef decode_from_stream(self, InputStream input_stream, size_t size):
+        cdef int32_t length
+        length = input_stream.read_int32()
+        return [self._elem_coder.decode_from_stream(input_stream, 0) for _ in range(length)]
+
+cdef class MapCoderImpl(FieldCoderImpl):
+    """
+    A coder for map value (dict with same type key and same type value).
+    """
+
+    def __init__(self, key_coder: FieldCoderImpl, value_coder: FieldCoderImpl):
+        self._key_coder = key_coder
+        self._value_coder = value_coder
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        cdef int32_t length
+        length = len(value)
+        out_stream.write_int32(length)
+        items = value.items()
+        for k, v in items:
+            self._key_coder.encode_to_stream(k, out_stream)
+            if v is None:
+                out_stream.write_byte(True)
+            else:
+                out_stream.write_byte(False)
+                self._value_coder.encode_to_stream(v, out_stream)
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        cdef int32_t length
+        cdef dict map_value
+        length = in_stream.read_int32()
+        map_value = {}
+        for _ in range(length):
+            key = self._key_coder.decode_from_stream(in_stream, 0)
+            if in_stream.read_byte():
+                map_value[key] = None
+            else:
+                map_value[key] = self._value_coder.decode_from_stream(in_stream, 0)
+        return map_value
+
+cdef class TupleCoderImpl(FieldCoderImpl):
+    """
+    A coder for a tuple value.
+    """
+
+    def __init__(self, field_coders):
+        self._field_coders = field_coders
+        self._field_count = len(field_coders)
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        cdef tuple tuple_value = value
+        for i in range(self._field_count):
+            self._field_coders[i].encode_to_stream(tuple_value[i], out_stream)
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        cdef int32_t i
+        cdef list decoded_list
+        decoded_list = [self._field_coders[i].decode_from_stream(in_stream, 0)
+                        for i in range(self._field_count)]
+        return tuple(decoded_list)
+
+cdef class TimeWindowCoderImpl(FieldCoderImpl):
+    """
+    A coder for TimeWindow.
+    """
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        out_stream.write_int64(value.start)
+        out_stream.write_int64(value.end)
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        cdef int64_t start, end
+        start = in_stream.read_int64()
+        end = in_stream.read_int64()
+        return TimeWindow(start, end)
+
+cdef class CountWindowCoderImpl(FieldCoderImpl):
+    """
+    A coder for CountWindow.
+    """
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        out_stream.write_int64(value.id)
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        return CountWindow(in_stream.read_int64())
+
+cdef class GlobalWindowCoderImpl(FieldCoderImpl):
+    """
+    A coder for GlobalWindow.
+    """
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        out_stream.write_byte(0)
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        in_stream.read_byte()
+        return GlobalWindow()
+
+cdef class DataViewFilterCoderImpl(FieldCoderImpl):
+    """
+    A coder for CountWindow.
+    """
+    def __init__(self, udf_data_view_specs):
+        self._udf_data_view_specs = udf_data_view_specs
+        self._pickle_coder = PickleCoderImpl()
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        self._pickle_coder.encode_to_stream(self._filter_data_views(value), out_stream)
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        return self._pickle_coder.decode_from_stream(in_stream, size)
+
+    def _filter_data_views(self, row):
+        i = 0
+        for specs in self._udf_data_view_specs:
+            for spec in specs:
+                row[i][spec.field_index] = None
+            i += 1
+        return row
+
+cdef class AvroCoderImpl(FieldCoderImpl):
+
+    def __init__(self, schema_string: str):
+        self._buffer_wrapper = FlinkAvroBufferWrapper()
+        self._schema = avro_schema.parse(schema_string)
+        self._decoder = FlinkAvroDecoder(self._buffer_wrapper)
+        self._encoder = FlinkAvroEncoder(self._buffer_wrapper)
+        self._reader = FlinkAvroDatumReader(writer_schema=self._schema, reader_schema=self._schema)
+        self._writer = FlinkAvroDatumWriter(writer_schema=self._schema)
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        self._buffer_wrapper.switch_stream(out_stream)
+        self._writer.write(value, self._encoder)
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t size):
+        self._buffer_wrapper.switch_stream(in_stream)
+        return self._reader.read(self._decoder)
+
+cdef class LocalDateCoderImpl(FieldCoderImpl):
+
+    @staticmethod
+    def _encode_to_stream(value, OutputStream out_stream):
+        if value is None:
+            out_stream.write_int32(0xFFFFFFFF)
+            out_stream.write_int16(0xFFFF)
+        else:
+            out_stream.write_int32(value.year)
+            out_stream.write_int8(value.month)
+            out_stream.write_int8(value.day)
+
+    @staticmethod
+    def _decode_from_stream(InputStream in_stream):
+        year = in_stream.read_int32()
+        if year == 0xFFFFFFFF:
+            in_stream.read(2)
+            return None
+        month = in_stream.read_int8()
+        day = in_stream.read_int8()
+        return datetime.date(year, month, day)
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        return self._encode_to_stream(value, out_stream)
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t length):
+        return self._decode_from_stream(in_stream)
+
+cdef class LocalTimeCoderImpl(FieldCoderImpl):
+
+    @staticmethod
+    def _encode_to_stream(value, OutputStream out_stream):
+        if value is None:
+            out_stream.write_int8(0xFF)
+            out_stream.write_int16(0xFFFF)
+            out_stream.write_int32(0xFFFFFFFF)
+        else:
+            out_stream.write_int8(value.hour)
+            out_stream.write_int8(value.minute)
+            out_stream.write_int8(value.second)
+            out_stream.write_int32(value.microsecond * 1000)
+
+    @staticmethod
+    def _decode_from_stream(InputStream in_stream):
+        hour = in_stream.read_int8()
+        if hour == 0xFF:
+            in_stream.read(6)
+            return None
+        minute = in_stream.read_int8()
+        second = in_stream.read_int8()
+        nano = in_stream.read_int32()
+        return datetime.time(hour, minute, second, nano // 1000)
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        return self._encode_to_stream(value, out_stream)
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t length):
+        return self._decode_from_stream(in_stream)
+
+cdef class LocalDateTimeCoderImpl(FieldCoderImpl):
+
+    cpdef encode_to_stream(self, value, OutputStream out_stream):
+        if value is None:
+            LocalDateCoderImpl._encode_to_stream(None, out_stream)
+            LocalTimeCoderImpl._encode_to_stream(None, out_stream)
+        else:
+            LocalDateCoderImpl._encode_to_stream(value.date(), out_stream)
+            LocalTimeCoderImpl._encode_to_stream(value.time(), out_stream)
+
+    cpdef decode_from_stream(self, InputStream in_stream, size_t length):
+        date = LocalDateCoderImpl._decode_from_stream(in_stream)
+        time = LocalTimeCoderImpl._decode_from_stream(in_stream)
+        if date is None or time is None:
+            return None
+        return datetime.datetime(date.year, date.month, date.day, time.hour, time.minute,
+                                 time.second, time.microsecond)

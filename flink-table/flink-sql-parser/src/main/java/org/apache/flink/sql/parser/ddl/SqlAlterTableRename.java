@@ -29,30 +29,40 @@ import java.util.List;
 import static java.util.Objects.requireNonNull;
 
 /**
- * ALTER TABLE [[catalogName.] dataBasesName].tableName RENAME TO [[catalogName.] dataBasesName].newTableName.
+ * ALTER TABLE [IF EXISTS] [[catalogName.] dataBasesName].tableName RENAME TO [[catalogName.]
+ * dataBasesName].newTableName.
  */
 public class SqlAlterTableRename extends SqlAlterTable {
 
-	private final SqlIdentifier newTableIdentifier;
+    private final SqlIdentifier newTableIdentifier;
 
-	public SqlAlterTableRename(SqlParserPos pos, SqlIdentifier tableName, SqlIdentifier newTableName) {
-		super(pos, tableName);
-		this.newTableIdentifier = requireNonNull(newTableName, "new tableName should not be null");
-	}
+    public SqlAlterTableRename(
+            SqlParserPos pos,
+            SqlIdentifier tableName,
+            SqlIdentifier newTableName,
+            boolean ifTableExists) {
+        super(pos, tableName, ifTableExists);
+        this.newTableIdentifier = requireNonNull(newTableName, "new tableName should not be null");
+    }
 
-	@Override
-	public List<SqlNode> getOperandList() {
-		return ImmutableNullableList.of(tableIdentifier, newTableIdentifier);
-	}
+    public SqlAlterTableRename(
+            SqlParserPos pos, SqlIdentifier tableName, SqlIdentifier newTableName) {
+        this(pos, tableName, newTableName, false);
+    }
 
-	@Override
-	public void unparse(SqlWriter writer, int leftPrec, int rightPrec) {
-		super.unparse(writer, leftPrec, rightPrec);
-		writer.keyword("RENAME TO");
-		newTableIdentifier.unparse(writer, leftPrec, rightPrec);
-	}
+    @Override
+    public List<SqlNode> getOperandList() {
+        return ImmutableNullableList.of(tableIdentifier, newTableIdentifier);
+    }
 
-	public String[] fullNewTableName() {
-		return newTableIdentifier.names.toArray(new String[0]);
-	}
+    @Override
+    public void unparse(SqlWriter writer, int leftPrec, int rightPrec) {
+        super.unparse(writer, leftPrec, rightPrec);
+        writer.keyword("RENAME TO");
+        newTableIdentifier.unparse(writer, leftPrec, rightPrec);
+    }
+
+    public String[] fullNewTableName() {
+        return newTableIdentifier.names.toArray(new String[0]);
+    }
 }

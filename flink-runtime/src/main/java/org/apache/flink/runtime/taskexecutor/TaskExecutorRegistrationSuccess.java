@@ -24,72 +24,74 @@ import org.apache.flink.runtime.instance.InstanceID;
 import org.apache.flink.runtime.registration.RegistrationResponse;
 import org.apache.flink.util.Preconditions;
 
+import javax.annotation.Nullable;
+
 import java.io.Serializable;
 
 /**
- * Base class for responses from the ResourceManager to a registration attempt by a
- * TaskExecutor.
+ * Base class for responses from the ResourceManager to a registration attempt by a TaskExecutor.
  */
-public final class TaskExecutorRegistrationSuccess extends RegistrationResponse.Success implements Serializable {
+public final class TaskExecutorRegistrationSuccess extends RegistrationResponse.Success
+        implements Serializable {
 
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	private final InstanceID registrationId;
+    private final InstanceID registrationId;
 
-	private final ResourceID resourceManagerResourceId;
+    private final ResourceID resourceManagerResourceId;
 
-	private final ClusterInformation clusterInformation;
+    private final ClusterInformation clusterInformation;
 
-	/**
-	 * Create a new {@code TaskExecutorRegistrationSuccess} message.
-	 *
-	 * @param registrationId The ID that the ResourceManager assigned the registration.
-	 * @param resourceManagerResourceId The unique ID that identifies the ResourceManager.
-	 * @param clusterInformation information about the cluster
-	 */
-	public TaskExecutorRegistrationSuccess(
-			InstanceID registrationId,
-			ResourceID resourceManagerResourceId,
-			ClusterInformation clusterInformation) {
-		this.registrationId = Preconditions.checkNotNull(registrationId);
-		this.resourceManagerResourceId = Preconditions.checkNotNull(resourceManagerResourceId);
-		this.clusterInformation = Preconditions.checkNotNull(clusterInformation);
-	}
+    @Nullable private final byte[] initialTokens;
 
-	/**
-	 * Gets the ID that the ResourceManager assigned the registration.
-	 */
-	public InstanceID getRegistrationId() {
-		return registrationId;
-	}
+    /**
+     * Create a new {@code TaskExecutorRegistrationSuccess} message.
+     *
+     * @param registrationId The ID that the ResourceManager assigned the registration.
+     * @param resourceManagerResourceId The unique ID that identifies the ResourceManager.
+     * @param clusterInformation information about the cluster
+     * @param initialTokens initial tokens for the TaskExecutor
+     */
+    public TaskExecutorRegistrationSuccess(
+            InstanceID registrationId,
+            ResourceID resourceManagerResourceId,
+            ClusterInformation clusterInformation,
+            @Nullable byte[] initialTokens) {
+        this.registrationId = Preconditions.checkNotNull(registrationId);
+        this.resourceManagerResourceId = Preconditions.checkNotNull(resourceManagerResourceId);
+        this.clusterInformation = Preconditions.checkNotNull(clusterInformation);
+        this.initialTokens = initialTokens;
+    }
 
-	/**
-	 * Gets the unique ID that identifies the ResourceManager.
-	 */
-	public ResourceID getResourceManagerId() {
-		return resourceManagerResourceId;
-	}
+    /** Gets the ID that the ResourceManager assigned the registration. */
+    public InstanceID getRegistrationId() {
+        return registrationId;
+    }
 
-	/**
-	 * Gets the cluster information.
-	 */
-	public ClusterInformation getClusterInformation() {
-		return clusterInformation;
-	}
+    /** Gets the unique ID that identifies the ResourceManager. */
+    public ResourceID getResourceManagerId() {
+        return resourceManagerResourceId;
+    }
 
-	@Override
-	public String toString() {
-		return "TaskExecutorRegistrationSuccess{" +
-			"registrationId=" + registrationId +
-			", resourceManagerResourceId=" + resourceManagerResourceId +
-			", clusterInformation=" + clusterInformation +
-			'}';
-	}
+    /** Gets the cluster information. */
+    public ClusterInformation getClusterInformation() {
+        return clusterInformation;
+    }
+
+    /** Gets the initial tokens. */
+    public byte[] getInitialTokens() {
+        return initialTokens;
+    }
+
+    @Override
+    public String toString() {
+        return "TaskExecutorRegistrationSuccess{"
+                + "registrationId="
+                + registrationId
+                + ", resourceManagerResourceId="
+                + resourceManagerResourceId
+                + ", clusterInformation="
+                + clusterInformation
+                + '}';
+    }
 }
-
-
-
-
-
-
-

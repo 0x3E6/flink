@@ -19,17 +19,14 @@
 package org.apache.flink.metrics.datadog;
 
 import org.apache.flink.metrics.util.MetricReporterTestUtils;
-import org.apache.flink.util.TestLogger;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-/**
- * Tests for the {@link DatadogHttpReporterFactory}.
- */
-public class DatadogHttpReporterFactoryTest extends TestLogger {
+/** Tests for the {@link DatadogHttpReporterFactory}. */
+class DatadogHttpReporterFactoryTest {
 
-	@Test
-	public void testMetricReporterSetupViaSPI() {
-		MetricReporterTestUtils.testMetricReporterSetupViaSPI(DatadogHttpReporterFactory.class);
-	}
+    @Test
+    void testMetricReporterSetupViaSPI() {
+        MetricReporterTestUtils.testMetricReporterSetupViaSPI(DatadogHttpReporterFactory.class);
+    }
 }

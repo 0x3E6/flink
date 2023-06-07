@@ -29,14 +29,15 @@ import java.util.Optional;
  */
 public interface StreamStateHandle extends StateObject {
 
-	/**
-	 * Returns an {@link FSDataInputStream} that can be used to read back the data that
-	 * was previously written to the stream.
-	 */
-	FSDataInputStream openInputStream() throws IOException;
+    /**
+     * Returns an {@link FSDataInputStream} that can be used to read back the data that was
+     * previously written to the stream.
+     */
+    FSDataInputStream openInputStream() throws IOException;
 
-	/**
-	 * @return Content of this handle as bytes array if it is already in memory.
-	 */
-	Optional<byte[]> asBytesIfInMemory();
+    /** @return Content of this handle as bytes array if it is already in memory. */
+    Optional<byte[]> asBytesIfInMemory();
+
+    /** @return a unique identifier of this handle. */
+    PhysicalStateHandleID getStreamStateHandleID();
 }

@@ -18,14 +18,16 @@
 
 package org.apache.flink.metrics.reporter;
 
-/**
- * Interface for reporters that actively send out data periodically.
- */
+import org.apache.flink.annotation.Public;
+
+/** Interface for reporters that actively send out data periodically. */
+@Public
 public interface Scheduled {
 
-	/**
-	 * Report the current measurements. This method is called periodically by the
-	 * metrics registry that uses the reporter.
-	 */
-	void report();
+    /**
+     * Report the current measurements. This method is called periodically by the metrics registry
+     * that uses the reporter. This method must not block for a significant amount of time, any
+     * reporter needing more time should instead run the operation asynchronously.
+     */
+    void report();
 }

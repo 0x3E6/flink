@@ -16,11 +16,11 @@
  * limitations under the License.
  */
 
-export interface TaskManagerListInterface {
-  taskmanagers: TaskmanagersItemInterface[];
+export interface TaskManagerList {
+  taskmanagers: TaskManagersItem[];
 }
 
-export interface TaskManagerDetailInterface {
+export interface TaskManagerDetail {
   id: string;
   path: string;
   dataPort: number;
@@ -29,13 +29,32 @@ export interface TaskManagerDetailInterface {
   freeSlots: number;
   hardware: Hardware;
   metrics: Metrics;
+  memoryConfiguration: MemoryConfiguration;
+  blocked?: boolean;
+  freeResource: Resources;
+  totalResource: Resources;
 }
 
-export interface TaskManagerLogInterface {
-  logs: { name: string; size: number }[];
+export interface Resources {
+  cpuCores: number;
+  taskHeapMemory: number;
+  taskOffHeapMemory: number;
+  managedMemory: number;
+  networkMemory: number;
 }
 
-export interface TaskmanagersItemInterface {
+export interface TaskManagerLogItem {
+  name: string;
+  size: number;
+  mtime: number;
+}
+
+export interface TaskManagerLogDetail {
+  data: string;
+  url: string;
+}
+
+export interface TaskManagersItem {
   id: string;
   path: string;
   dataPort: number;
@@ -43,6 +62,7 @@ export interface TaskmanagersItemInterface {
   slotsNumber: number;
   freeSlots: number;
   hardware: Hardware;
+  blocked?: boolean;
 }
 
 interface Hardware {
@@ -70,17 +90,30 @@ interface Metrics {
   garbageCollectors: GarbageCollectorsItem[];
 }
 
+interface MemoryConfiguration {
+  frameworkHeap: number;
+  frameworkOffHeap: number;
+  jvmMetaspace: number;
+  jvmOverhead: number;
+  managedMemory: number;
+  networkMemory: number;
+  taskHeap: number;
+  taskOffHeap: number;
+  totalFlinkMemory: number;
+  totalProcessMemory: number;
+}
+
 interface GarbageCollectorsItem {
   name: string;
   count: number;
   time: number;
 }
 
-export interface TaskManagerThreadDumpInterface {
-  threadInfos: TaskManagerThreadInfoInterface[];
+export interface TaskManagerThreadDump {
+  threadInfos: TaskManagerThreadInfo[];
 }
 
-interface TaskManagerThreadInfoInterface {
-    threadName: string;
-    stringifiedThreadInfo: string;
+interface TaskManagerThreadInfo {
+  threadName: string;
+  stringifiedThreadInfo: string;
 }

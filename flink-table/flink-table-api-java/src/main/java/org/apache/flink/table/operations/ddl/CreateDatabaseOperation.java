@@ -18,7 +18,13 @@
 
 package org.apache.flink.table.operations.ddl;
 
+import org.apache.flink.table.api.TableException;
+import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.api.internal.TableResultImpl;
+import org.apache.flink.table.api.internal.TableResultInternal;
+import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.table.catalog.CatalogDatabase;
+import org.apache.flink.table.catalog.exceptions.DatabaseAlreadyExistException;
 import org.apache.flink.table.operations.Operation;
 import org.apache.flink.table.operations.OperationUtils;
 
@@ -26,53 +32,63 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/**
- * Operation to describe a CREATE DATABASE statement.
- */
+/** Operation to describe a CREATE DATABASE statement. */
 public class CreateDatabaseOperation implements CreateOperation {
-	private final String catalogName;
-	private final String databaseName;
-	private final CatalogDatabase catalogDatabase;
-	private final boolean ignoreIfExists;
+    private final String catalogName;
+    private final String databaseName;
+    private final CatalogDatabase catalogDatabase;
+    private final boolean ignoreIfExists;
 
-	public CreateDatabaseOperation(
-			String catalogName,
-			String databaseName,
-			CatalogDatabase catalogDatabase, boolean ignoreIfExists) {
-		this.catalogName = catalogName;
-		this.databaseName = databaseName;
-		this.catalogDatabase = catalogDatabase;
-		this.ignoreIfExists = ignoreIfExists;
-	}
+    public CreateDatabaseOperation(
+            String catalogName,
+            String databaseName,
+            CatalogDatabase catalogDatabase,
+            boolean ignoreIfExists) {
+        this.catalogName = catalogName;
+        this.databaseName = databaseName;
+        this.catalogDatabase = catalogDatabase;
+        this.ignoreIfExists = ignoreIfExists;
+    }
 
-	public String getCatalogName() {
-		return catalogName;
-	}
+    public String getCatalogName() {
+        return catalogName;
+    }
 
-	public String getDatabaseName() {
-		return databaseName;
-	}
+    public String getDatabaseName() {
+        return databaseName;
+    }
 
-	public CatalogDatabase getCatalogDatabase() {
-		return catalogDatabase;
-	}
+    public CatalogDatabase getCatalogDatabase() {
+        return catalogDatabase;
+    }
 
-	public boolean isIgnoreIfExists() {
-		return ignoreIfExists;
-	}
+    public boolean isIgnoreIfExists() {
+        return ignoreIfExists;
+    }
 
-	@Override
-	public String asSummaryString() {
-		Map<String, Object> params = new LinkedHashMap<>();
-		params.put("catalogDatabase", catalogDatabase.getProperties());
-		params.put("catalogName", catalogName);
-		params.put("databaseName", databaseName);
-		params.put("ignoreIfExists", ignoreIfExists);
+    @Override
+    public String asSummaryString() {
+        Map<String, Object> params = new LinkedHashMap<>();
+        params.put("catalogDatabase", catalogDatabase.getProperties());
+        params.put("catalogName", catalogName);
+        params.put("databaseName", databaseName);
+        params.put("ignoreIfExists", ignoreIfExists);
 
-		return OperationUtils.formatWithChildren(
-			"CREATE DATABASE",
-			params,
-			Collections.emptyList(),
-			Operation::asSummaryString);
-	}
+        return OperationUtils.formatWithChildren(
+                "CREATE DATABASE", params, Collections.emptyList(), Operation::asSummaryString);
+    }
+
+    @Override
+    public TableResultInternal execute(Context ctx) {
+        Catalog catalog = ctx.getCatalogManager().getCatalogOrThrowException(catalogName);
+        try {
+            catalog.createDatabase(databaseName, catalogDatabase, ignoreIfExists);
+            return TableResultImpl.TABLE_RESULT_OK;
+        } catch (DatabaseAlreadyExistException e) {
+            throw new ValidationException(
+                    String.format("Could not execute %s", asSummaryString()), e);
+        } catch (Exception e) {
+            throw new TableException(String.format("Could not execute %s", asSummaryString()), e);
+        }
+    }
 }

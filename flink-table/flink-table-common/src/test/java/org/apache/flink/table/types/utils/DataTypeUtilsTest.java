@@ -21,17 +21,19 @@ package org.apache.flink.table.types.utils;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.typeutils.TupleTypeInfo;
 import org.apache.flink.table.api.DataTypes;
-import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ObjectIdentifier;
+import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.test.DataTypeConditions;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.FieldsDataType;
 import org.apache.flink.table.types.logical.DistinctType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.StructuredType;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
@@ -40,176 +42,196 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 
+import static org.apache.flink.table.api.DataTypes.BIGINT;
 import static org.apache.flink.table.api.DataTypes.BOOLEAN;
+import static org.apache.flink.table.api.DataTypes.DOUBLE;
 import static org.apache.flink.table.api.DataTypes.FIELD;
 import static org.apache.flink.table.api.DataTypes.INT;
 import static org.apache.flink.table.api.DataTypes.ROW;
 import static org.apache.flink.table.api.DataTypes.STRING;
 import static org.apache.flink.table.api.DataTypes.TIMESTAMP;
-import static org.hamcrest.CoreMatchers.equalTo;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.apache.flink.table.test.TableAssertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/**
- * Tests for {@link DataTypeUtils}.
- */
-public class DataTypeUtilsTest {
+/** Tests for {@link DataTypeUtils}. */
+class DataTypeUtilsTest {
 
-	@Test
-	public void testIsInternalClass() {
-		assertTrue(DataTypeUtils.isInternal(DataTypes.INT()));
-		assertTrue(DataTypeUtils.isInternal(DataTypes.INT().notNull().bridgedTo(int.class)));
-		assertTrue(DataTypeUtils.isInternal(DataTypes.ROW().bridgedTo(RowData.class)));
-		assertFalse(DataTypeUtils.isInternal(DataTypes.ROW()));
-	}
+    @Test
+    void testAppendRowFields() {
+        assertThat(
+                        DataTypeUtils.appendRowFields(
+                                ROW(
+                                        FIELD("a0", BOOLEAN()),
+                                        FIELD("a1", DOUBLE()),
+                                        FIELD("a2", INT())),
+                                Arrays.asList(FIELD("a3", BIGINT()), FIELD("a4", TIMESTAMP(3)))))
+                .isEqualTo(
+                        ROW(
+                                FIELD("a0", BOOLEAN()),
+                                FIELD("a1", DOUBLE()),
+                                FIELD("a2", INT()),
+                                FIELD("a3", BIGINT()),
+                                FIELD("a4", TIMESTAMP(3))));
 
-	@Test
-	public void testFlattenToDataTypes() {
-		assertThat(
-			DataTypeUtils.flattenToDataTypes(INT()),
-			equalTo(Collections.singletonList(INT())));
+        assertThat(
+                        DataTypeUtils.appendRowFields(
+                                ROW(), Arrays.asList(FIELD("a", BOOLEAN()), FIELD("b", INT()))))
+                .isEqualTo(ROW(FIELD("a", BOOLEAN()), FIELD("b", INT())));
+    }
 
-		assertThat(
-			DataTypeUtils.flattenToDataTypes(ROW(FIELD("a", INT()), FIELD("b", BOOLEAN()))),
-			equalTo(Arrays.asList(INT(), BOOLEAN())));
-	}
+    @Test
+    void testIsInternalClass() {
+        assertThat(DataTypes.INT()).is(DataTypeConditions.INTERNAL);
+        assertThat(DataTypes.INT().notNull().bridgedTo(int.class)).is(DataTypeConditions.INTERNAL);
+        assertThat(DataTypes.ROW().bridgedTo(RowData.class)).is(DataTypeConditions.INTERNAL);
+        assertThat(DataTypes.ROW()).isNot(DataTypeConditions.INTERNAL);
+    }
 
-	@Test
-	public void testFlattenToNames() {
-		assertThat(
-			DataTypeUtils.flattenToNames(INT(), Collections.emptyList()),
-			equalTo(Collections.singletonList("f0")));
+    @Test
+    void testFlattenToDataTypes() {
+        assertThat(DataTypeUtils.flattenToDataTypes(INT())).containsOnly(INT());
 
-		assertThat(
-			DataTypeUtils.flattenToNames(INT(), Collections.singletonList("f0")),
-			equalTo(Collections.singletonList("f0_0")));
+        assertThat(DataTypeUtils.flattenToDataTypes(ROW(FIELD("a", INT()), FIELD("b", BOOLEAN()))))
+                .containsExactly(INT(), BOOLEAN());
+    }
 
-		assertThat(
-			DataTypeUtils.flattenToNames(ROW(FIELD("a", INT()), FIELD("b", BOOLEAN())), Collections.emptyList()),
-			equalTo(Arrays.asList("a", "b")));
-	}
+    @Test
+    void testFlattenToNames() {
+        assertThat(DataTypeUtils.flattenToNames(INT(), Collections.emptyList())).containsOnly("f0");
 
-	@Test
-	public void testExpandRowType() {
-		DataType dataType = ROW(
-			FIELD("f0", INT()),
-			FIELD("f1", STRING()),
-			FIELD("f2", TIMESTAMP(5).bridgedTo(Timestamp.class)),
-			FIELD("f3", TIMESTAMP(3)));
-		TableSchema schema = DataTypeUtils.expandCompositeTypeToSchema(dataType);
+        assertThat(DataTypeUtils.flattenToNames(INT(), Collections.singletonList("f0")))
+                .containsOnly("f0_0");
 
-		assertThat(
-			schema,
-			equalTo(
-				TableSchema.builder()
-					.field("f0", INT())
-					.field("f1", STRING())
-					.field("f2", TIMESTAMP(5).bridgedTo(Timestamp.class))
-					.field("f3", TIMESTAMP(3).bridgedTo(LocalDateTime.class))
-					.build()));
-	}
+        assertThat(
+                        DataTypeUtils.flattenToNames(
+                                ROW(FIELD("a", INT()), FIELD("b", BOOLEAN())),
+                                Collections.emptyList()))
+                .containsExactly("a", "b");
+    }
 
-	@Test
-	public void testExpandLegacyCompositeType() {
-		DataType dataType = TypeConversions.fromLegacyInfoToDataType(new TupleTypeInfo<>(
-			Types.STRING,
-			Types.INT,
-			Types.SQL_TIMESTAMP));
-		TableSchema schema = DataTypeUtils.expandCompositeTypeToSchema(dataType);
+    @Test
+    void testExpandRowType() {
+        DataType dataType =
+                ROW(
+                        FIELD("f0", INT()),
+                        FIELD("f1", STRING()),
+                        FIELD("f2", TIMESTAMP(5).bridgedTo(Timestamp.class)),
+                        FIELD("f3", TIMESTAMP(3)));
+        ResolvedSchema schema = DataTypeUtils.expandCompositeTypeToSchema(dataType);
 
-		assertThat(
-			schema,
-			equalTo(
-				TableSchema.builder()
-					.field("f0", STRING())
-					.field("f1", INT())
-					.field("f2", TIMESTAMP(3).bridgedTo(Timestamp.class))
-					.build()));
-	}
+        assertThat(schema)
+                .isEqualTo(
+                        ResolvedSchema.of(
+                                Column.physical("f0", INT()),
+                                Column.physical("f1", STRING()),
+                                Column.physical("f2", TIMESTAMP(5).bridgedTo(Timestamp.class)),
+                                Column.physical(
+                                        "f3", TIMESTAMP(3).bridgedTo(LocalDateTime.class))));
+    }
 
-	@Test
-	public void testExpandStructuredType() {
-		StructuredType logicalType = StructuredType.newBuilder(ObjectIdentifier.of("catalog", "database", "type"))
-			.attributes(Arrays.asList(
-				new StructuredType.StructuredAttribute("f0", DataTypes.INT().getLogicalType()),
-				new StructuredType.StructuredAttribute("f1", DataTypes.STRING().getLogicalType()),
-				new StructuredType.StructuredAttribute("f2", DataTypes.TIMESTAMP(5).getLogicalType()),
-				new StructuredType.StructuredAttribute("f3", DataTypes.TIMESTAMP(3).getLogicalType())
-			))
-			.build();
+    @Test
+    void testExpandLegacyCompositeType() {
+        DataType dataType =
+                TypeConversions.fromLegacyInfoToDataType(
+                        new TupleTypeInfo<>(Types.STRING, Types.INT, Types.SQL_TIMESTAMP));
+        ResolvedSchema schema = DataTypeUtils.expandCompositeTypeToSchema(dataType);
 
-		List<DataType> dataTypes = Arrays.asList(
-			DataTypes.INT(),
-			DataTypes.STRING(),
-			DataTypes.TIMESTAMP(5).bridgedTo(Timestamp.class),
-			DataTypes.TIMESTAMP(3));
-		FieldsDataType dataType = new FieldsDataType(logicalType, dataTypes);
+        assertThat(schema)
+                .isEqualTo(
+                        ResolvedSchema.of(
+                                Column.physical("f0", STRING()),
+                                Column.physical("f1", INT()),
+                                Column.physical("f2", TIMESTAMP(3).bridgedTo(Timestamp.class))));
+    }
 
-		TableSchema schema = DataTypeUtils.expandCompositeTypeToSchema(dataType);
+    @Test
+    void testExpandStructuredType() {
+        StructuredType logicalType =
+                StructuredType.newBuilder(ObjectIdentifier.of("catalog", "database", "type"))
+                        .attributes(
+                                Arrays.asList(
+                                        new StructuredType.StructuredAttribute(
+                                                "f0", DataTypes.INT().getLogicalType()),
+                                        new StructuredType.StructuredAttribute(
+                                                "f1", DataTypes.STRING().getLogicalType()),
+                                        new StructuredType.StructuredAttribute(
+                                                "f2", DataTypes.TIMESTAMP(5).getLogicalType()),
+                                        new StructuredType.StructuredAttribute(
+                                                "f3", DataTypes.TIMESTAMP(3).getLogicalType())))
+                        .build();
 
-		assertThat(
-			schema,
-			equalTo(
-				TableSchema.builder()
-					.field("f0", INT())
-					.field("f1", STRING())
-					.field("f2", TIMESTAMP(5).bridgedTo(Timestamp.class))
-					.field("f3", TIMESTAMP(3).bridgedTo(LocalDateTime.class))
-					.build()));
-	}
+        List<DataType> dataTypes =
+                Arrays.asList(
+                        DataTypes.INT(),
+                        DataTypes.STRING(),
+                        DataTypes.TIMESTAMP(5).bridgedTo(Timestamp.class),
+                        DataTypes.TIMESTAMP(3));
+        FieldsDataType dataType = new FieldsDataType(logicalType, dataTypes);
 
-	@Test
-	public void testExpandDistinctType() {
-		FieldsDataType dataType = (FieldsDataType) ROW(
-			FIELD("f0", INT()),
-			FIELD("f1", STRING()),
-			FIELD("f2", TIMESTAMP(5).bridgedTo(Timestamp.class)),
-			FIELD("f3", TIMESTAMP(3)));
+        ResolvedSchema schema = DataTypeUtils.expandCompositeTypeToSchema(dataType);
 
-		LogicalType originalLogicalType = dataType.getLogicalType();
-		DistinctType distinctLogicalType = DistinctType.newBuilder(
-			ObjectIdentifier.of("catalog", "database", "type"),
-			originalLogicalType)
-			.build();
-		DataType distinctDataType = new FieldsDataType(distinctLogicalType, dataType.getChildren());
+        assertThat(schema)
+                .isEqualTo(
+                        ResolvedSchema.of(
+                                Column.physical("f0", INT()),
+                                Column.physical("f1", STRING()),
+                                Column.physical("f2", TIMESTAMP(5).bridgedTo(Timestamp.class)),
+                                Column.physical(
+                                        "f3", TIMESTAMP(3).bridgedTo(LocalDateTime.class))));
+    }
 
-		TableSchema schema = DataTypeUtils.expandCompositeTypeToSchema(distinctDataType);
+    @Test
+    void testExpandDistinctType() {
+        FieldsDataType dataType =
+                (FieldsDataType)
+                        ROW(
+                                FIELD("f0", INT()),
+                                FIELD("f1", STRING()),
+                                FIELD("f2", TIMESTAMP(5).bridgedTo(Timestamp.class)),
+                                FIELD("f3", TIMESTAMP(3)));
 
-		assertThat(
-			schema,
-			equalTo(
-				TableSchema.builder()
-					.field("f0", INT())
-					.field("f1", STRING())
-					.field("f2", TIMESTAMP(5).bridgedTo(Timestamp.class))
-					.field("f3", TIMESTAMP(3).bridgedTo(LocalDateTime.class))
-					.build()));
-	}
+        LogicalType originalLogicalType = dataType.getLogicalType();
+        DistinctType distinctLogicalType =
+                DistinctType.newBuilder(
+                                ObjectIdentifier.of("catalog", "database", "type"),
+                                originalLogicalType)
+                        .build();
+        DataType distinctDataType = new FieldsDataType(distinctLogicalType, dataType.getChildren());
 
-	@Test(expected = IllegalArgumentException.class)
-	public void testExpandThrowExceptionOnAtomicType() {
-		DataTypeUtils.expandCompositeTypeToSchema(DataTypes.TIMESTAMP());
-	}
+        ResolvedSchema schema = DataTypeUtils.expandCompositeTypeToSchema(distinctDataType);
 
-	@Test
-	public void testDataTypeValidation() {
-		final DataType validDataType = DataTypes.MAP(DataTypes.INT(), DataTypes.STRING());
+        assertThat(schema)
+                .isEqualTo(
+                        ResolvedSchema.of(
+                                Column.physical("f0", INT()),
+                                Column.physical("f1", STRING()),
+                                Column.physical("f2", TIMESTAMP(5).bridgedTo(Timestamp.class)),
+                                Column.physical(
+                                        "f3", TIMESTAMP(3).bridgedTo(LocalDateTime.class))));
+    }
 
-		DataTypeUtils.validateInputDataType(validDataType);
-		DataTypeUtils.validateOutputDataType(validDataType);
+    @Test
+    void testExpandThrowExceptionOnAtomicType() {
+        assertThatThrownBy(() -> DataTypeUtils.expandCompositeTypeToSchema(DataTypes.TIMESTAMP()))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 
-		final DataType inputOnlyDataType = validDataType.bridgedTo(HashMap.class);
-		DataTypeUtils.validateInputDataType(inputOnlyDataType);
-		try {
-			DataTypeUtils.validateOutputDataType(inputOnlyDataType);
-			fail();
-		} catch (ValidationException e) {
-			assertEquals(
-				e.getMessage(),
-				"Data type 'MAP<INT, STRING>' does not support an output conversion to class '" + java.util.HashMap.class.getName() + "'.");
-		}
-	}
+    @Test
+    void testDataTypeValidation() {
+        final DataType validDataType = DataTypes.MAP(DataTypes.INT(), DataTypes.STRING());
+
+        DataTypeUtils.validateInputDataType(validDataType);
+        DataTypeUtils.validateOutputDataType(validDataType);
+
+        final DataType inputOnlyDataType = validDataType.bridgedTo(HashMap.class);
+        DataTypeUtils.validateInputDataType(inputOnlyDataType);
+
+        assertThatThrownBy(() -> DataTypeUtils.validateOutputDataType(inputOnlyDataType))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage(
+                        "Data type 'MAP<INT, STRING>' does not support an output conversion to class '"
+                                + java.util.HashMap.class.getName()
+                                + "'.");
+    }
 }

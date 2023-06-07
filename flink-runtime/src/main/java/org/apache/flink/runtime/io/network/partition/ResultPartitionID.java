@@ -23,61 +23,86 @@ import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.executiongraph.IntermediateResultPartition;
 import org.apache.flink.runtime.jobgraph.IntermediateResultPartitionID;
 
+import org.apache.flink.shaded.netty4.io.netty.buffer.ByteBuf;
+import org.apache.flink.shaded.netty4.io.netty.buffer.Unpooled;
+
 import java.io.Serializable;
 
+import static org.apache.flink.runtime.executiongraph.ExecutionAttemptID.randomId;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
  * Runtime identifier of a produced {@link IntermediateResultPartition}.
  *
- * <p>In failure cases the {@link IntermediateResultPartitionID} is not enough to uniquely
- * identify a result partition. It needs to be associated with the producing task as well to ensure
- * correct tracking of failed/restarted tasks.
+ * <p>In failure cases the {@link IntermediateResultPartitionID} is not enough to uniquely identify
+ * a result partition. It needs to be associated with the producing task as well to ensure correct
+ * tracking of failed/restarted tasks.
  */
 public final class ResultPartitionID implements Serializable {
 
-	private static final long serialVersionUID = -902516386203787826L;
+    private static final long serialVersionUID = -902516386203787826L;
 
-	private final IntermediateResultPartitionID partitionId;
+    private final IntermediateResultPartitionID partitionId;
 
-	private final ExecutionAttemptID producerId;
+    private final ExecutionAttemptID producerId;
 
-	@VisibleForTesting
-	public ResultPartitionID() {
-		this(new IntermediateResultPartitionID(), new ExecutionAttemptID());
-	}
+    @VisibleForTesting
+    public ResultPartitionID() {
+        this(new IntermediateResultPartitionID(), randomId());
+    }
 
-	public ResultPartitionID(IntermediateResultPartitionID partitionId, ExecutionAttemptID producerId) {
-		this.partitionId = checkNotNull(partitionId);
-		this.producerId = checkNotNull(producerId);
-	}
+    public ResultPartitionID(
+            IntermediateResultPartitionID partitionId, ExecutionAttemptID producerId) {
+        this.partitionId = checkNotNull(partitionId);
+        this.producerId = checkNotNull(producerId);
+    }
 
-	public IntermediateResultPartitionID getPartitionId() {
-		return partitionId;
-	}
+    public ResultPartitionID(byte[] bytes) {
+        ByteBuf byteBuf = Unpooled.buffer();
+        byteBuf.writeBytes(bytes);
 
-	public ExecutionAttemptID getProducerId() {
-		return producerId;
-	}
+        this.partitionId = IntermediateResultPartitionID.fromByteBuf(byteBuf);
+        this.producerId = ExecutionAttemptID.fromByteBuf(byteBuf);
+        byteBuf.release();
+    }
 
-	@Override
-	public boolean equals(Object obj) {
-		if (obj != null && obj.getClass() == ResultPartitionID.class) {
-			ResultPartitionID o = (ResultPartitionID) obj;
+    public IntermediateResultPartitionID getPartitionId() {
+        return partitionId;
+    }
 
-			return o.getPartitionId().equals(partitionId) && o.getProducerId().equals(producerId);
-		}
+    public ExecutionAttemptID getProducerId() {
+        return producerId;
+    }
 
-		return false;
-	}
+    @Override
+    public boolean equals(Object obj) {
+        if (obj != null && obj.getClass() == ResultPartitionID.class) {
+            ResultPartitionID o = (ResultPartitionID) obj;
 
-	@Override
-	public int hashCode() {
-		return partitionId.hashCode() ^ producerId.hashCode();
-	}
+            return o.getPartitionId().equals(partitionId) && o.getProducerId().equals(producerId);
+        }
 
-	@Override
-	public String toString() {
-		return partitionId.toString() + "@" + producerId.toString();
-	}
+        return false;
+    }
+
+    @Override
+    public int hashCode() {
+        return partitionId.hashCode() ^ producerId.hashCode();
+    }
+
+    @Override
+    public String toString() {
+        return partitionId.toString() + "@" + producerId.toString();
+    }
+
+    public byte[] getBytes() {
+        ByteBuf byteBuf = Unpooled.buffer();
+        partitionId.writeTo(byteBuf);
+        producerId.writeTo(byteBuf);
+
+        byte[] bytes = new byte[byteBuf.readableBytes()];
+        byteBuf.readBytes(bytes);
+        byteBuf.release();
+        return bytes;
+    }
 }

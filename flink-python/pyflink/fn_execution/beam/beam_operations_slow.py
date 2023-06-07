@@ -15,159 +15,211 @@
 #  See the License for the specific language governing permissions and
 # limitations under the License.
 ################################################################################
-from functools import reduce
-from itertools import chain
+import abc
+from abc import abstractmethod
+from typing import Iterable, Any, Dict, List
 
-from apache_beam.runners.worker import operation_specs
-from apache_beam.runners.worker import bundle_processor
+from apache_beam.runners.worker.bundle_processor import TimerInfo, DataOutputOperation
 from apache_beam.runners.worker.operations import Operation
+from apache_beam.utils import windowed_value
 from apache_beam.utils.windowed_value import WindowedValue
 
-from pyflink.fn_execution import flink_fn_execution_pb2, operation_utils
-from pyflink.table import FunctionContext
-from pyflink.metrics.metricbase import GenericMetricGroup
+from pyflink.common.constants import DEFAULT_OUTPUT_TAG
+from pyflink.fn_execution.flink_fn_execution_pb2 import UserDefinedDataStreamFunction
+from pyflink.fn_execution.table.operations import BundleOperation
+from pyflink.fn_execution.profiler import Profiler
 
 
-class StatelessFunctionOperation(Operation):
+class OutputProcessor(abc.ABC):
+
+    @abstractmethod
+    def process_outputs(self, windowed_value: WindowedValue, results: Iterable[Any]):
+        pass
+
+    def close(self):
+        pass
+
+
+class NetworkOutputProcessor(OutputProcessor):
+
+    def __init__(self, consumer):
+        assert isinstance(consumer, DataOutputOperation)
+        self._consumer = consumer
+        self._value_coder_impl = consumer.windowed_coder.wrapped_value_coder.get_impl()._value_coder
+
+    def process_outputs(self, windowed_value: WindowedValue, results: Iterable[Any]):
+        output_stream = self._consumer.output_stream
+        self._value_coder_impl.encode_to_stream(results, output_stream, True)
+        self._value_coder_impl._output_stream.maybe_flush()
+
+    def close(self):
+        self._value_coder_impl._output_stream.close()
+
+
+class IntermediateOutputProcessor(OutputProcessor):
+
+    def __init__(self, consumer):
+        self._consumer = consumer
+
+    def process_outputs(self, windowed_value: WindowedValue, results: Iterable[Any]):
+        self._consumer.process(windowed_value.with_value(results))
+
+
+class FunctionOperation(Operation):
     """
-    Base class of stateless function operation that will execute ScalarFunction or TableFunction for
+    Base class of function operation that will execute StatelessFunction or StatefulFunction for
     each input element.
     """
 
-    def __init__(self, name, spec, counter_factory, sampler, consumers):
-        super(StatelessFunctionOperation, self).__init__(name, spec, counter_factory, sampler)
-        self.consumer = consumers['output'][0]
-        self._value_coder_impl = self.consumer.windowed_coder.wrapped_value_coder.get_impl()
+    def __init__(self, name, spec, counter_factory, sampler, consumers, operation_cls,
+                 operator_state_backend):
+        super(FunctionOperation, self).__init__(name, spec, counter_factory, sampler)
+        self._output_processors = self._create_output_processors(
+            consumers
+        )  # type: Dict[str, List[OutputProcessor]]
+        self.operation_cls = operation_cls
+        self.operator_state_backend = operator_state_backend
+        self.operation = self.generate_operation()
+        self.process_element = self.operation.process_element
+        self.operation.open()
+        if spec.serialized_fn.profile_enabled:
+            self._profiler = Profiler()
+        else:
+            self._profiler = None
 
-        self.func, self.user_defined_funcs = self.generate_func(self.spec.serialized_fn.udfs)
-        self._metric_enabled = self.spec.serialized_fn.metric_enabled
-        self.base_metric_group = None
-        if self._metric_enabled:
-            self.base_metric_group = GenericMetricGroup(None, None)
-        for user_defined_func in self.user_defined_funcs:
-            user_defined_func.open(FunctionContext(self.base_metric_group))
+        if isinstance(spec.serialized_fn, UserDefinedDataStreamFunction):
+            self._has_side_output = spec.serialized_fn.has_side_output
+        else:
+            # it doesn't support side output in Table API & SQL
+            self._has_side_output = False
+        if not self._has_side_output:
+            self._main_output_processor = self._output_processors[DEFAULT_OUTPUT_TAG][0]
 
     def setup(self):
-        super(StatelessFunctionOperation, self).setup()
+        super(FunctionOperation, self).setup()
 
     def start(self):
         with self.scoped_start_state:
-            super(StatelessFunctionOperation, self).start()
+            super(FunctionOperation, self).start()
+            if self._profiler:
+                self._profiler.start()
 
     def finish(self):
         with self.scoped_finish_state:
-            super(StatelessFunctionOperation, self).finish()
-            self._update_gauge(self.base_metric_group)
+            super(FunctionOperation, self).finish()
+            self.operation.finish()
+            if self._profiler:
+                self._profiler.close()
 
     def needs_finalization(self):
         return False
 
     def reset(self):
-        super(StatelessFunctionOperation, self).reset()
+        super(FunctionOperation, self).reset()
 
     def teardown(self):
         with self.scoped_finish_state:
-            for user_defined_func in self.user_defined_funcs:
-                user_defined_func.close()
+            self.operation.close()
+            for processors in self._output_processors.values():
+                for p in processors:
+                    p.close()
 
     def progress_metrics(self):
-        metrics = super(StatelessFunctionOperation, self).progress_metrics()
+        metrics = super(FunctionOperation, self).progress_metrics()
         metrics.processed_elements.measured.output_element_counts.clear()
         tag = None
         receiver = self.receivers[0]
         metrics.processed_elements.measured.output_element_counts[
-            str(tag)] = receiver.opcounter.element_counter.value()
+            str(tag)
+        ] = receiver.opcounter.element_counter.value()
         return metrics
 
     def process(self, o: WindowedValue):
         with self.scoped_process_state:
-            output_stream = self.consumer.output_stream
-            self._value_coder_impl.encode_to_stream(self.func(o.value), output_stream, True)
-            output_stream.maybe_flush()
+            if self._has_side_output:
+                for value in o.value:
+                    for tag, row in self.process_element(value):
+                        for p in self._output_processors.get(tag, []):
+                            p.process_outputs(o, [row])
+            else:
+                if isinstance(self.operation, BundleOperation):
+                    for value in o.value:
+                        self.process_element(value)
+                    self._main_output_processor.process_outputs(o, self.operation.finish_bundle())
+                else:
+                    for value in o.value:
+                        self._main_output_processor.process_outputs(
+                            o, self.operation.process_element(value)
+                        )
 
-    def monitoring_infos(self, transform_id):
-        # only pass user metric to Java
+    def monitoring_infos(self, transform_id, tag_to_pcollection_id):
+        """
+        Only pass user metric to Java
+        :param tag_to_pcollection_id: useless for user metric
+        """
         return super().user_monitoring_infos(transform_id)
 
-    def generate_func(self, udfs) -> tuple:
+    @staticmethod
+    def _create_output_processors(consumers_map):
+        def _create_processor(consumer):
+            if isinstance(consumer, DataOutputOperation):
+                return NetworkOutputProcessor(consumer)
+            else:
+                return IntermediateOutputProcessor(consumer)
+
+        return {
+            tag: [_create_processor(c) for c in consumers]
+            for tag, consumers in consumers_map.items()
+        }
+
+    @abstractmethod
+    def generate_operation(self):
         pass
 
-    @staticmethod
-    def _update_gauge(base_metric_group):
-        if base_metric_group is not None:
-            for name in base_metric_group._flink_gauge:
-                flink_gauge = base_metric_group._flink_gauge[name]
-                beam_gauge = base_metric_group._beam_gauge[name]
-                beam_gauge.set(flink_gauge())
-            for sub_group in base_metric_group._sub_groups:
-                StatelessFunctionOperation._update_gauge(sub_group)
+
+class StatelessFunctionOperation(FunctionOperation):
+    def __init__(self, name, spec, counter_factory, sampler, consumers, operation_cls,
+                 operator_state_backend):
+        super(StatelessFunctionOperation, self).__init__(
+            name, spec, counter_factory, sampler, consumers, operation_cls, operator_state_backend
+        )
+
+    def generate_operation(self):
+        if self.operator_state_backend is not None:
+            return self.operation_cls(self.spec.serialized_fn, self.operator_state_backend)
+        else:
+            return self.operation_cls(self.spec.serialized_fn)
 
 
-class ScalarFunctionOperation(StatelessFunctionOperation):
-    def __init__(self, name, spec, counter_factory, sampler, consumers):
-        super(ScalarFunctionOperation, self).__init__(
-            name, spec, counter_factory, sampler, consumers)
+class StatefulFunctionOperation(FunctionOperation):
+    def __init__(self, name, spec, counter_factory, sampler, consumers, operation_cls,
+                 keyed_state_backend, operator_state_backend):
+        self._keyed_state_backend = keyed_state_backend
+        self._reusable_windowed_value = windowed_value.create(None, -1, None, None)
+        super(StatefulFunctionOperation, self).__init__(
+            name, spec, counter_factory, sampler, consumers, operation_cls, operator_state_backend
+        )
 
-    def generate_func(self, udfs):
-        """
-        Generates a lambda function based on udfs.
-        :param udfs: a list of the proto representation of the Python :class:`ScalarFunction`
-        :return: the generated lambda function
-        """
-        scalar_functions, variable_dict, user_defined_funcs = reduce(
-            lambda x, y: (
-                ','.join([x[0], y[0]]),
-                dict(chain(x[1].items(), y[1].items())),
-                x[2] + y[2]),
-            [operation_utils.extract_user_defined_function(udf) for udf in udfs])
-        mapper = eval('lambda value: [%s]' % scalar_functions, variable_dict)
-        return lambda it: map(mapper, it), user_defined_funcs
+    def generate_operation(self):
+        if self.operator_state_backend is not None:
+            return self.operation_cls(self.spec.serialized_fn, self._keyed_state_backend,
+                                      self.operator_state_backend)
+        else:
+            return self.operation_cls(self.spec.serialized_fn, self._keyed_state_backend)
 
+    def add_timer_info(self, timer_family_id: str, timer_info: TimerInfo):
+        # ignore timer_family_id
+        self.operation.add_timer_info(timer_info)
 
-class TableFunctionOperation(StatelessFunctionOperation):
-    def __init__(self, name, spec, counter_factory, sampler, consumers):
-        super(TableFunctionOperation, self).__init__(
-            name, spec, counter_factory, sampler, consumers)
-
-    def generate_func(self, udtfs):
-        """
-        Generates a lambda function based on udtfs.
-        :param udtfs: a list of the proto representation of the Python :class:`TableFunction`
-        :return: the generated lambda function
-        """
-        table_function, variable_dict, user_defined_funcs = \
-            operation_utils.extract_user_defined_function(udtfs[0])
-        mapper = eval('lambda value: %s' % table_function, variable_dict)
-        return lambda it: map(mapper, it), user_defined_funcs
-
-@bundle_processor.BeamTransformFactory.register_urn(
-    operation_utils.SCALAR_FUNCTION_URN, flink_fn_execution_pb2.UserDefinedFunctions)
-def create_scalar_function(factory, transform_id, transform_proto, parameter, consumers):
-    return _create_user_defined_function_operation(
-        factory, transform_proto, consumers, parameter, ScalarFunctionOperation)
-
-
-@bundle_processor.BeamTransformFactory.register_urn(
-    operation_utils.TABLE_FUNCTION_URN, flink_fn_execution_pb2.UserDefinedFunctions)
-def create_table_function(factory, transform_id, transform_proto, parameter, consumers):
-    return _create_user_defined_function_operation(
-        factory, transform_proto, consumers, parameter, TableFunctionOperation)
-
-
-def _create_user_defined_function_operation(factory, transform_proto, consumers, udfs_proto,
-                                            operation_cls):
-    output_tags = list(transform_proto.outputs.keys())
-    output_coders = factory.get_output_coders(transform_proto)
-    spec = operation_specs.WorkerDoFn(
-        serialized_fn=udfs_proto,
-        output_tags=output_tags,
-        input=None,
-        side_inputs=None,
-        output_coders=[output_coders[tag] for tag in output_tags])
-
-    return operation_cls(
-        transform_proto.unique_name,
-        spec,
-        factory.counter_factory,
-        factory.state_sampler,
-        consumers)
+    def process_timer(self, tag, timer_data):
+        if self._has_side_output:
+            # the field user_key holds the timer data
+            for tag, row in self.operation.process_timer(timer_data.user_key):
+                for p in self._output_processors.get(tag, []):
+                    p.process_outputs(self._reusable_windowed_value, [row])
+        else:
+            self._main_output_processor.process_outputs(
+                self._reusable_windowed_value,
+                # the field user_key holds the timer data
+                self.operation.process_timer(timer_data.user_key),
+            )

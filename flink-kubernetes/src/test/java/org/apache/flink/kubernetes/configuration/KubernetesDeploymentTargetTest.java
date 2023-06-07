@@ -21,55 +21,60 @@ package org.apache.flink.kubernetes.configuration;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.DeploymentOptions;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/**
- * Tests for the {@link KubernetesDeploymentTarget}.
- */
-public class KubernetesDeploymentTargetTest {
+/** Tests for the {@link KubernetesDeploymentTarget}. */
+class KubernetesDeploymentTargetTest {
 
-	@Test
-	public void testCorrectInstantiationFromConfiguration() {
-		for (KubernetesDeploymentTarget t : KubernetesDeploymentTarget.values()) {
-			testCorrectInstantiationFromConfigurationHelper(t);
-		}
-	}
+    @Test
+    void testCorrectInstantiationFromConfiguration() {
+        for (KubernetesDeploymentTarget t : KubernetesDeploymentTarget.values()) {
+            testCorrectInstantiationFromConfigurationHelper(t);
+        }
+    }
 
-	@Test(expected = IllegalArgumentException.class)
-	public void testInvalidInstantiationFromConfiguration() {
-		final Configuration configuration = getConfigurationWithTarget("invalid-target");
-		KubernetesDeploymentTarget.fromConfig(configuration);
-	}
+    @Test
+    public void testInvalidInstantiationFromConfiguration() {
+        final Configuration configuration = getConfigurationWithTarget("invalid-target");
+        assertThatThrownBy(() -> KubernetesDeploymentTarget.fromConfig(configuration))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 
-	@Test(expected = IllegalArgumentException.class)
-	public void testNullInstantiationFromConfiguration() {
-		KubernetesDeploymentTarget.fromConfig(new Configuration());
-	}
+    @Test
+    public void testNullInstantiationFromConfiguration() {
+        assertThatThrownBy(() -> KubernetesDeploymentTarget.fromConfig(new Configuration()))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 
-	@Test
-	public void testThatAValidOptionIsValid() {
-		assertTrue(KubernetesDeploymentTarget.isValidKubernetesTarget(KubernetesDeploymentTarget.APPLICATION.getName()));
-	}
+    @Test
+    void testThatAValidOptionIsValid() {
+        assertThat(
+                        KubernetesDeploymentTarget.isValidKubernetesTarget(
+                                KubernetesDeploymentTarget.APPLICATION.getName()))
+                .isTrue();
+    }
 
-	@Test
-	public void testThatAnInvalidOptionIsInvalid() {
-		assertFalse(KubernetesDeploymentTarget.isValidKubernetesTarget("invalid-target"));
-	}
+    @Test
+    void testThatAnInvalidOptionIsInvalid() {
+        assertThat(KubernetesDeploymentTarget.isValidKubernetesTarget("invalid-target")).isFalse();
+    }
 
-	private void testCorrectInstantiationFromConfigurationHelper(final KubernetesDeploymentTarget expectedDeploymentTarget) {
-		final Configuration configuration = getConfigurationWithTarget(expectedDeploymentTarget.getName().toUpperCase());
-		final KubernetesDeploymentTarget actualDeploymentTarget = KubernetesDeploymentTarget.fromConfig(configuration);
+    private void testCorrectInstantiationFromConfigurationHelper(
+            final KubernetesDeploymentTarget expectedDeploymentTarget) {
+        final Configuration configuration =
+                getConfigurationWithTarget(expectedDeploymentTarget.getName().toUpperCase());
+        final KubernetesDeploymentTarget actualDeploymentTarget =
+                KubernetesDeploymentTarget.fromConfig(configuration);
 
-		assertSame(actualDeploymentTarget, expectedDeploymentTarget);
-	}
+        assertThat(expectedDeploymentTarget).isSameAs(actualDeploymentTarget);
+    }
 
-	private Configuration getConfigurationWithTarget(final String target) {
-		final Configuration configuration = new Configuration();
-		configuration.set(DeploymentOptions.TARGET,  target);
-		return configuration;
-	}
+    private Configuration getConfigurationWithTarget(final String target) {
+        final Configuration configuration = new Configuration();
+        configuration.set(DeploymentOptions.TARGET, target);
+        return configuration;
+    }
 }

@@ -20,40 +20,36 @@ package org.apache.flink.formats.avro.typeutils;
 
 import org.apache.flink.api.common.typeutils.SerializerTestBase;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
+import org.apache.flink.formats.avro.utils.AvroTestUtils;
 
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.generic.GenericRecordBuilder;
 
-/**
- * Test for {@link AvroSerializer} that tests GenericRecord.
- */
-public class AvroSerializerGenericRecordTest extends SerializerTestBase<GenericRecord> {
+/** Test for {@link AvroSerializer} that tests GenericRecord. */
+class AvroSerializerGenericRecordTest extends SerializerTestBase<GenericRecord> {
 
-	private static final Schema SCHEMA = new org.apache.avro.Schema.Parser()
-		.parse("{\"type\":\"record\",\"name\":\"Dummy\",\"namespace\":\"dummy\",\"fields\": "
-			+ "[{\"name\":\"afield\",\"type\":{\"type\":\"string\",\"avro.java.string\":\"String\"}}]}");
+    private static final Schema SCHEMA = AvroTestUtils.getSmallSchema();
 
-	@Override
-	protected TypeSerializer<GenericRecord> createSerializer() {
-		return new AvroSerializer<>(GenericRecord.class, SCHEMA);
-	}
+    @Override
+    protected TypeSerializer<GenericRecord> createSerializer() {
+        return new AvroSerializer<>(GenericRecord.class, SCHEMA);
+    }
 
-	@Override
-	protected int getLength() {
-		return -1;
-	}
+    @Override
+    protected int getLength() {
+        return -1;
+    }
 
-	@Override
-	protected Class<GenericRecord> getTypeClass() {
-		return GenericRecord.class;
-	}
+    @Override
+    protected Class<GenericRecord> getTypeClass() {
+        return GenericRecord.class;
+    }
 
-	@Override
-	protected GenericRecord[] getTestData() {
-		return new GenericRecord[]{
-			new GenericRecordBuilder(SCHEMA)
-				.set("afield", "foo bar")
-				.build()};
-	}
+    @Override
+    protected GenericRecord[] getTestData() {
+        return new GenericRecord[] {
+            new GenericRecordBuilder(SCHEMA).set("afield", "foo bar").build()
+        };
+    }
 }

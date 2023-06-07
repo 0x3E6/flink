@@ -23,17 +23,20 @@ CLUSTER_ROLE_BINDING="flink-role-binding-default"
 CLUSTER_ID="flink-native-k8s-application-1"
 FLINK_IMAGE_NAME="test_kubernetes_application"
 LOCAL_LOGS_PATH="${TEST_DATA_DIR}/log"
+IMAGE_BUILD_RETRIES=3
+IMAGE_BUILD_BACKOFF=2
 
 function internal_cleanup {
     kubectl delete deployment ${CLUSTER_ID}
     kubectl delete clusterrolebinding ${CLUSTER_ROLE_BINDING}
 }
 
-setConsoleLogging
-
 start_kubernetes
 
-build_image ${FLINK_IMAGE_NAME}
+if ! retry_times $IMAGE_BUILD_RETRIES $IMAGE_BUILD_BACKOFF "build_image ${FLINK_IMAGE_NAME} $(get_host_machine_address)"; then
+	echo "ERROR: Could not build image. Aborting..."
+	exit 1
+fi
 
 kubectl create clusterrolebinding ${CLUSTER_ROLE_BINDING} --clusterrole=edit --serviceaccount=default:default --namespace=default
 
@@ -42,11 +45,10 @@ mkdir -p "$LOCAL_LOGS_PATH"
 # Set the memory and cpu smaller than default, so that the jobmanager and taskmanager pods could be allocated in minikube.
 "$FLINK_DIR"/bin/flink run-application -t kubernetes-application \
     -Dkubernetes.cluster-id=${CLUSTER_ID} \
-    -Dkubernetes.container.image=${FLINK_IMAGE_NAME} \
+    -Dkubernetes.container.image.ref=${FLINK_IMAGE_NAME} \
     -Djobmanager.memory.process.size=1088m \
     -Dkubernetes.jobmanager.cpu=0.5 \
     -Dkubernetes.taskmanager.cpu=0.5 \
-    -Dkubernetes.container-start-command-template="%java% %classpath% %jvmmem% %jvmopts% %logging% %class% %args%" \
     -Dkubernetes.rest-service.exposed.type=NodePort \
     local:///opt/flink/examples/batch/WordCount.jar
 
@@ -57,5 +59,4 @@ wait_rest_endpoint_up_k8s $jm_pod_name
 # The Flink cluster will be destroyed immediately once the job finished or failed. So we check jobmanager logs
 # instead of checking the result
 kubectl logs -f $jm_pod_name >$LOCAL_LOGS_PATH/jobmanager.log
-grep -E "Job [A-Za-z0-9]+ reached globally terminal state FINISHED" $LOCAL_LOGS_PATH/jobmanager.log
-
+grep -E "Job [A-Za-z0-9]+ reached terminal state FINISHED" $LOCAL_LOGS_PATH/jobmanager.log

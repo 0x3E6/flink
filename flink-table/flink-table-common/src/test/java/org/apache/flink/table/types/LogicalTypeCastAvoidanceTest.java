@@ -50,286 +50,244 @@ import org.apache.flink.table.types.logical.YearMonthIntervalType;
 import org.apache.flink.table.types.logical.ZonedTimestampType;
 import org.apache.flink.table.types.logical.utils.LogicalTypeCasts;
 
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
-import org.junit.runners.Parameterized.Parameter;
-import org.junit.runners.Parameterized.Parameters;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.util.Arrays;
-import java.util.List;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static org.apache.flink.table.types.logical.utils.LogicalTypeCasts.supportsAvoidingCast;
-import static org.hamcrest.CoreMatchers.equalTo;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.params.provider.Arguments.of;
 
-/**
- * Tests for {@link LogicalTypeCasts#supportsAvoidingCast(LogicalType, LogicalType)}.
- */
-@RunWith(Parameterized.class)
-public class LogicalTypeCastAvoidanceTest {
+/** Tests for {@link LogicalTypeCasts#supportsAvoidingCast(LogicalType, LogicalType)}. */
+class LogicalTypeCastAvoidanceTest {
 
-	@Parameters(name = "{index}: [{0} COMPATIBLE {1} => {2}")
-	public static List<Object[]> testData() {
-		return Arrays.asList(
-			new Object[][]{
-				{new CharType(), new CharType(5), false},
+    private static Stream<Arguments> testData() {
+        return Stream.of(
+                of(new CharType(), new CharType(5), false),
+                of(new VarCharType(30), new VarCharType(10), false),
+                of(new VarCharType(10), new VarCharType(30), true),
+                of(new CharType(10), new VarCharType(30), true),
+                of(new BinaryType(10), new VarBinaryType(30), true),
+                of(new CharType(false, 10), new VarCharType(30), true),
+                of(new BinaryType(false, 10), new VarBinaryType(30), true),
+                of(new VarCharType(30), new CharType(10), false),
+                of(new VarBinaryType(30), new BinaryType(10), false),
+                of(new BooleanType(), new BooleanType(false), false),
+                of(new BinaryType(10), new BinaryType(30), false),
+                of(new VarBinaryType(10), new VarBinaryType(30), true),
+                of(new VarBinaryType(30), new VarBinaryType(10), false),
+                of(new DecimalType(), new DecimalType(10, 2), false),
+                of(new TinyIntType(), new TinyIntType(false), false),
+                of(new SmallIntType(), new SmallIntType(false), false),
+                of(new IntType(), new IntType(false), false),
+                of(new IntType(false), new IntType(), true),
+                of(new BigIntType(), new BigIntType(false), false),
+                of(new FloatType(), new FloatType(false), false),
+                of(new DoubleType(), new DoubleType(false), false),
+                of(new DateType(), new DateType(false), false),
+                of(new TimeType(), new TimeType(9), false),
+                of(new TimestampType(9), new TimestampType(3), false),
+                of(new ZonedTimestampType(9), new ZonedTimestampType(3), false),
+                of(
+                        new ZonedTimestampType(false, TimestampKind.ROWTIME, 9),
+                        new ZonedTimestampType(3),
+                        false),
+                of(
+                        new YearMonthIntervalType(
+                                YearMonthIntervalType.YearMonthResolution.YEAR_TO_MONTH, 2),
+                        new YearMonthIntervalType(YearMonthIntervalType.YearMonthResolution.MONTH),
+                        false),
+                of(
+                        new DayTimeIntervalType(
+                                DayTimeIntervalType.DayTimeResolution.DAY_TO_SECOND, 2, 6),
+                        new DayTimeIntervalType(
+                                DayTimeIntervalType.DayTimeResolution.DAY_TO_SECOND, 2, 7),
+                        false),
+                of(new ArrayType(new TimestampType()), new ArrayType(new SmallIntType()), false),
+                of(
+                        new MultisetType(new TimestampType()),
+                        new MultisetType(new SmallIntType()),
+                        false),
+                of(
+                        new MapType(new VarCharType(10), new TimestampType()),
+                        new MapType(new VarCharType(30), new TimestampType()),
+                        true),
+                of(
+                        new MapType(new VarCharType(30), new TimestampType()),
+                        new MapType(new VarCharType(10), new TimestampType()),
+                        false),
+                of(
+                        new RowType(
+                                Arrays.asList(
+                                        new RowType.RowField("a", new VarCharType()),
+                                        new RowType.RowField("b", new VarCharType()),
+                                        new RowType.RowField("c", new VarCharType()),
+                                        new RowType.RowField("d", new TimestampType()))),
+                        new RowType(
+                                Arrays.asList(
+                                        new RowType.RowField("_a", new VarCharType()),
+                                        new RowType.RowField("_b", new VarCharType()),
+                                        new RowType.RowField("_c", new VarCharType()),
+                                        new RowType.RowField("_d", new TimestampType()))),
+                        // field name doesn't matter
+                        true),
+                of(
+                        new RowType(
+                                Arrays.asList(
+                                        new RowField("f1", new IntType()),
+                                        new RowField("f2", new VarCharType()))),
+                        new RowType(
+                                Arrays.asList(
+                                        new RowField("f1", new IntType()),
+                                        new RowField("f2", new BooleanType()))),
+                        false),
+                of(
+                        new ArrayType(
+                                new RowType(
+                                        Arrays.asList(
+                                                new RowField("f1", new IntType()),
+                                                new RowField("f2", new IntType())))),
+                        new ArrayType(
+                                new RowType(
+                                        Arrays.asList(
+                                                new RowField("f3", new IntType()),
+                                                new RowField("f4", new IntType())))),
+                        true),
+                of(
+                        new MapType(
+                                new IntType(),
+                                new RowType(
+                                        Arrays.asList(
+                                                new RowField("f1", new IntType()),
+                                                new RowField("f2", new IntType())))),
+                        new MapType(
+                                new IntType(),
+                                new RowType(
+                                        Arrays.asList(
+                                                new RowField("f3", new IntType()),
+                                                new RowField("f4", new IntType())))),
+                        true),
+                of(
+                        new MultisetType(
+                                new RowType(
+                                        Arrays.asList(
+                                                new RowField("f1", new IntType()),
+                                                new RowField("f2", new IntType())))),
+                        new MultisetType(
+                                new RowType(
+                                        Arrays.asList(
+                                                new RowField("f1", new IntType()),
+                                                new RowField("f2", new IntType())))),
+                        true),
+                of(
+                        new TypeInformationRawType<>(Types.GENERIC(LogicalTypesTest.class)),
+                        new TypeInformationRawType<>(Types.GENERIC(Object.class)),
+                        false),
+                of(
+                        createUserType("User", new IntType(), new VarCharType()),
+                        createUserType("User", new IntType(), new VarCharType()),
+                        true),
+                of(
+                        createUserType("User", new IntType(), new VarCharType()),
+                        createUserType("User2", new IntType(), new VarCharType()),
+                        false),
+                of(
+                        createDistinctType("Money", new DecimalType(10, 2)),
+                        createDistinctType("Money", new DecimalType(10, 2)),
+                        true),
+                of(
+                        createDistinctType("Money", new DecimalType(10, 2)),
+                        createDistinctType("Money2", new DecimalType(10, 2)),
+                        true),
 
-				{new VarCharType(30), new VarCharType(10), false},
+                // row and structured type
+                of(
+                        RowType.of(new IntType(), new VarCharType()),
+                        createUserType("User2", new IntType(), new VarCharType()),
+                        true),
+                of(
+                        RowType.of(new BigIntType(), new VarCharType()),
+                        createUserType("User2", new IntType(), new VarCharType()),
+                        false),
+                of(
+                        createUserType("User2", new IntType(), new VarCharType()),
+                        RowType.of(new IntType(), new VarCharType()),
+                        true),
+                of(
+                        createUserType("User2", new IntType(), new VarCharType()),
+                        RowType.of(new BigIntType(), new VarCharType()),
+                        false),
 
-				{new VarCharType(10), new VarCharType(30), true},
+                // test slightly different children of anonymous structured types
+                of(
+                        StructuredType.newBuilder(Void.class)
+                                .attributes(
+                                        Arrays.asList(
+                                                new StructuredType.StructuredAttribute(
+                                                        "f1", new TimestampType()),
+                                                new StructuredType.StructuredAttribute(
+                                                        "diff", new TinyIntType(false))))
+                                .build(),
+                        StructuredType.newBuilder(Void.class)
+                                .attributes(
+                                        Arrays.asList(
+                                                new StructuredType.StructuredAttribute(
+                                                        "f1", new TimestampType()),
+                                                new StructuredType.StructuredAttribute(
+                                                        "diff", new TinyIntType(true))))
+                                .build(),
+                        true),
+                of(
+                        StructuredType.newBuilder(Void.class)
+                                .attributes(
+                                        Arrays.asList(
+                                                new StructuredType.StructuredAttribute(
+                                                        "f1", new TimestampType()),
+                                                new StructuredType.StructuredAttribute(
+                                                        "diff", new TinyIntType(true))))
+                                .build(),
+                        StructuredType.newBuilder(Void.class)
+                                .attributes(
+                                        Arrays.asList(
+                                                new StructuredType.StructuredAttribute(
+                                                        "f1", new TimestampType()),
+                                                new StructuredType.StructuredAttribute(
+                                                        "diff", new TinyIntType(false))))
+                                .build(),
+                        false));
+    }
 
-				{new CharType(10), new VarCharType(30), true},
+    @ParameterizedTest(name = "{index}: [{0} COMPATIBLE {1} => {2}")
+    @MethodSource("testData")
+    void testSupportsAvoidingCast(LogicalType sourceType, LogicalType targetType, boolean equals) {
+        assertThat(supportsAvoidingCast(sourceType, targetType)).isEqualTo(equals);
+        assertThat(supportsAvoidingCast(sourceType, sourceType.copy())).isTrue();
+        assertThat(supportsAvoidingCast(targetType, targetType.copy())).isTrue();
+    }
 
-				{new BinaryType(10), new VarBinaryType(30), true},
+    private static DistinctType createDistinctType(String name, LogicalType sourceType) {
+        return DistinctType.newBuilder(ObjectIdentifier.of("cat", "db", name), sourceType)
+                .description("Money type desc.")
+                .build();
+    }
 
-				{new CharType(false, 10), new VarCharType(30), true},
+    private static StructuredType createUserType(String name, LogicalType... children) {
+        return StructuredType.newBuilder(ObjectIdentifier.of("cat", "db", name), User.class)
+                .attributes(
+                        Arrays.stream(children)
+                                .map(lt -> new StructuredType.StructuredAttribute("field", lt))
+                                .collect(Collectors.toList()))
+                .description("User type desc.")
+                .setFinal(true)
+                .setInstantiable(true)
+                .build();
+    }
 
-				{new BinaryType(false, 10), new VarBinaryType(30), true},
-
-				{new VarCharType(30), new CharType(10), false},
-
-				{new VarBinaryType(30), new BinaryType(10), false},
-
-				{new BooleanType(), new BooleanType(false), false},
-
-				{new BinaryType(10), new BinaryType(30), false},
-
-				{new VarBinaryType(10), new VarBinaryType(30), true},
-
-				{new VarBinaryType(30), new VarBinaryType(10), false},
-
-				{new DecimalType(), new DecimalType(10, 2), false},
-
-				{new TinyIntType(), new TinyIntType(false), false},
-
-				{new SmallIntType(), new SmallIntType(false), false},
-
-				{new IntType(), new IntType(false), false},
-
-				{new IntType(false), new IntType(), true},
-
-				{new BigIntType(), new BigIntType(false), false},
-
-				{new FloatType(), new FloatType(false), false},
-
-				{new DoubleType(), new DoubleType(false), false},
-
-				{new DateType(), new DateType(false), false},
-
-				{new TimeType(), new TimeType(9), false},
-
-				{new TimestampType(9), new TimestampType(3), false},
-
-				{new ZonedTimestampType(9), new ZonedTimestampType(3), false},
-
-				{new ZonedTimestampType(false, TimestampKind.PROCTIME, 9), new ZonedTimestampType(3), false},
-
-				{
-					new YearMonthIntervalType(YearMonthIntervalType.YearMonthResolution.YEAR_TO_MONTH, 2),
-					new YearMonthIntervalType(YearMonthIntervalType.YearMonthResolution.MONTH),
-					false
-				},
-
-				{
-					new DayTimeIntervalType(DayTimeIntervalType.DayTimeResolution.DAY_TO_SECOND, 2, 6),
-					new DayTimeIntervalType(DayTimeIntervalType.DayTimeResolution.DAY_TO_SECOND, 2, 7),
-					false
-				},
-
-				{
-					new ArrayType(new TimestampType()),
-					new ArrayType(new SmallIntType()),
-					false,
-				},
-
-				{
-					new MultisetType(new TimestampType()),
-					new MultisetType(new SmallIntType()),
-					false
-				},
-
-				{
-					new MapType(new VarCharType(10), new TimestampType()),
-					new MapType(new VarCharType(30), new TimestampType()),
-					true
-				},
-
-				{
-					new MapType(new VarCharType(30), new TimestampType()),
-					new MapType(new VarCharType(10), new TimestampType()),
-					false
-				},
-
-				{
-					new RowType(
-						Arrays.asList(
-							new RowType.RowField("a", new VarCharType()),
-							new RowType.RowField("b", new VarCharType()),
-							new RowType.RowField("c", new VarCharType()),
-							new RowType.RowField("d", new TimestampType()))),
-					new RowType(
-						Arrays.asList(
-							new RowType.RowField("_a", new VarCharType()),
-							new RowType.RowField("_b", new VarCharType()),
-							new RowType.RowField("_c", new VarCharType()),
-							new RowType.RowField("_d", new TimestampType()))),
-					// field name doesn't matter
-					true
-				},
-
-				{
-					new RowType(
-						Arrays.asList(
-							new RowField("f1", new IntType()),
-							new RowField("f2", new VarCharType())
-						)
-					),
-					new RowType(
-						Arrays.asList(
-							new RowField("f1", new IntType()),
-							new RowField("f2", new BooleanType())
-						)
-					),
-					false
-				},
-
-				{
-					new ArrayType(
-						new RowType(
-							Arrays.asList(
-								new RowField("f1", new IntType()),
-								new RowField("f2", new IntType())
-							)
-						)
-					),
-					new ArrayType(
-						new RowType(
-							Arrays.asList(
-								new RowField("f3", new IntType()),
-								new RowField("f4", new IntType())
-							)
-						)
-					),
-					true
-				},
-
-				{
-					new MapType(
-						new IntType(),
-						new RowType(
-							Arrays.asList(
-								new RowField("f1", new IntType()),
-								new RowField("f2", new IntType())
-							)
-						)
-					),
-					new MapType(
-						new IntType(),
-						new RowType(
-							Arrays.asList(
-								new RowField("f3", new IntType()),
-								new RowField("f4", new IntType())
-							)
-						)
-					),
-					true
-				},
-
-				{
-					new MultisetType(
-						new RowType(
-							Arrays.asList(
-								new RowField("f1", new IntType()),
-								new RowField("f2", new IntType())
-							)
-						)
-					),
-					new MultisetType(
-						new RowType(
-							Arrays.asList(
-								new RowField("f1", new IntType()),
-								new RowField("f2", new IntType())
-							)
-						)
-					),
-					true
-				},
-
-				{
-					new TypeInformationRawType<>(Types.GENERIC(LogicalTypesTest.class)),
-					new TypeInformationRawType<>(Types.GENERIC(Object.class)),
-					false
-				},
-
-				{
-					createUserType("User", new IntType(), new VarCharType()),
-					createUserType("User", new IntType(), new VarCharType()),
-					true
-				},
-
-				{
-					createUserType("User", new IntType(), new VarCharType()),
-					createUserType("User2", new IntType(), new VarCharType()),
-					false
-				},
-
-				{
-					createDistinctType("Money", new DecimalType(10, 2)),
-					createDistinctType("Money", new DecimalType(10, 2)),
-					true
-				},
-
-				{
-					createDistinctType("Money", new DecimalType(10, 2)),
-					createDistinctType("Money2", new DecimalType(10, 2)),
-					true
-				}
-			}
-		);
-	}
-
-	@Parameter
-	public LogicalType sourceType;
-
-	@Parameter(1)
-	public LogicalType targetType;
-
-	@Parameter(2)
-	public boolean equals;
-
-	@Test
-	public void testSupportsAvoidingCast() {
-		assertThat(
-			supportsAvoidingCast(sourceType, targetType),
-			equalTo(equals));
-		assertTrue(supportsAvoidingCast(sourceType, sourceType.copy()));
-		assertTrue(supportsAvoidingCast(targetType, targetType.copy()));
-	}
-
-	private static DistinctType createDistinctType(String name, LogicalType sourceType) {
-		return DistinctType.newBuilder(
-				ObjectIdentifier.of("cat", "db", name),
-				sourceType)
-			.description("Money type desc.")
-			.build();
-	}
-
-	private static StructuredType createUserType(String name, LogicalType... children) {
-		return StructuredType.newBuilder(ObjectIdentifier.of("cat", "db", name), User.class)
-			.attributes(
-				Arrays.stream(children)
-					.map(lt -> new StructuredType.StructuredAttribute("field", lt))
-					.collect(Collectors.toList()))
-			.description("User type desc.")
-			.setFinal(true)
-			.setInstantiable(true)
-			.build();
-	}
-
-	private static final class User {
-		public int setting;
-	}
+    private static final class User {
+        public int setting;
+    }
 }

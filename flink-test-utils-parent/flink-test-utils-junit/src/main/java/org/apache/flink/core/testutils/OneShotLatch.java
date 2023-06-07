@@ -25,116 +25,138 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /**
- * Latch for synchronizing parts of code in tests. Once the latch has fired once calls to
- * {@link #await()} will return immediately in the future.
+ * Latch for synchronizing parts of code in tests. Once the latch has fired once calls to {@link
+ * #await()} will return immediately in the future.
  *
- * <p>A part of the code that should only run after other code calls {@link #await()}. The call
- * will only return once the other part is finished and calls {@link #trigger()}.
+ * <p>A part of the code that should only run after other code calls {@link #await()}. The call will
+ * only return once the other part is finished and calls {@link #trigger()}.
  */
 public final class OneShotLatch {
 
-	private final Object lock = new Object();
-	private final Set<Thread> waitersSet = Collections.newSetFromMap(new IdentityHashMap<>());
+    private final Object lock = new Object();
+    private final Set<Thread> waitersSet = Collections.newSetFromMap(new IdentityHashMap<>());
 
-	private volatile boolean triggered;
+    private volatile boolean triggered;
 
-	/**
-	 * Fires the latch. Code that is blocked on {@link #await()} will now return.
-	 */
-	public void trigger() {
-		synchronized (lock) {
-			triggered = true;
-			lock.notifyAll();
-		}
-	}
+    /** Fires the latch. Code that is blocked on {@link #await()} will now return. */
+    public void trigger() {
+        synchronized (lock) {
+            triggered = true;
+            lock.notifyAll();
+        }
+    }
 
-	/**
-	 * Waits until {@link OneShotLatch#trigger()} is called. Once {@code trigger()} has been called this
-	 * call will always return immediately.
-	 *
-	 * @throws InterruptedException Thrown if the thread is interrupted while waiting.
-	 */
-	public void await() throws InterruptedException {
-		synchronized (lock) {
-			while (!triggered) {
-				Thread thread = Thread.currentThread();
-				try {
-					waitersSet.add(thread);
-					lock.wait();
-				} finally {
-					waitersSet.remove(thread);
-				}
-			}
-		}
-	}
+    /**
+     * Waits until {@link OneShotLatch#trigger()} is called. Once {@code trigger()} has been called
+     * this call will always return immediately.
+     *
+     * @throws InterruptedException Thrown if the thread is interrupted while waiting.
+     */
+    public void await() throws InterruptedException {
+        synchronized (lock) {
+            while (!triggered) {
+                Thread thread = Thread.currentThread();
+                try {
+                    waitersSet.add(thread);
+                    lock.wait();
+                } finally {
+                    waitersSet.remove(thread);
+                }
+            }
+        }
+    }
 
-	/**
-	 * Waits until {@link OneShotLatch#trigger()} is called. Once {@code #trigger()} has been called this
-	 * call will always return immediately.
-	 *
-	 * <p>If the latch is not triggered within the given timeout, a {@code TimeoutException}
-	 * will be thrown after the timeout.
-	 *
-	 * <p>A timeout value of zero means infinite timeout and make this equivalent to {@link #await()}.
-	 *
-	 * @param timeout   The value of the timeout, a value of zero indicating infinite timeout.
-	 * @param timeUnit  The unit of the timeout
-	 *
-	 * @throws InterruptedException Thrown if the thread is interrupted while waiting.
-	 * @throws TimeoutException Thrown, if the latch is not triggered within the timeout time.
-	 */
-	public void await(long timeout, TimeUnit timeUnit) throws InterruptedException, TimeoutException {
-		if (timeout < 0) {
-			throw new IllegalArgumentException("time may not be negative");
-		}
-		if (timeUnit == null) {
-			throw new NullPointerException("timeUnit");
-		}
+    /**
+     * Calls {@link #await()} and transforms any {@link InterruptedException} into a {@link
+     * RuntimeException}.
+     */
+    public void awaitQuietly() {
+        try {
+            await();
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+    }
 
-		if (timeout == 0) {
-			await();
-		} else {
-			final long deadline = System.nanoTime() + timeUnit.toNanos(timeout);
-			long millisToWait;
+    /**
+     * Waits until {@link OneShotLatch#trigger()} is called. Once {@code #trigger()} has been called
+     * this call will always return immediately.
+     *
+     * <p>If the latch is not triggered within the given timeout, a {@code TimeoutException} will be
+     * thrown after the timeout.
+     *
+     * <p>A timeout value of zero means infinite timeout and make this equivalent to {@link
+     * #await()}.
+     *
+     * @param timeout The value of the timeout, a value of zero indicating infinite timeout.
+     * @param timeUnit The unit of the timeout
+     * @throws InterruptedException Thrown if the thread is interrupted while waiting.
+     * @throws TimeoutException Thrown, if the latch is not triggered within the timeout time.
+     */
+    public void await(long timeout, TimeUnit timeUnit)
+            throws InterruptedException, TimeoutException {
+        if (timeout < 0) {
+            throw new IllegalArgumentException("time may not be negative");
+        }
+        if (timeUnit == null) {
+            throw new NullPointerException("timeUnit");
+        }
 
-			synchronized (lock) {
-				while (!triggered && (millisToWait = (deadline - System.nanoTime()) / 1_000_000) > 0) {
-					lock.wait(millisToWait);
-				}
+        if (timeout == 0) {
+            await();
+        } else {
+            final long deadline = System.nanoTime() + timeUnit.toNanos(timeout);
+            long millisToWait;
 
-				if (!triggered) {
-					throw new TimeoutException();
-				}
-			}
-		}
-	}
+            synchronized (lock) {
+                while (!triggered
+                        && (millisToWait = (deadline - System.nanoTime()) / 1_000_000) > 0) {
+                    lock.wait(millisToWait);
+                }
 
-	/**
-	 * Checks if the latch was triggered.
-	 *
-	 * @return True, if the latch was triggered, false if not.
-	 */
-	public boolean isTriggered() {
-		return triggered;
-	}
+                if (!triggered) {
+                    throw new TimeoutException();
+                }
+            }
+        }
+    }
 
-	public int getWaitersCount() {
-		synchronized (lock) {
-			return waitersSet.size();
-		}
-	}
+    /**
+     * Calls {@link #await(long, TimeUnit)} and transforms any {@link InterruptedException} or
+     * {@link TimeoutException} into a {@link RuntimeException}.
+     */
+    public void awaitQuietly(long timeout, TimeUnit timeUnit) {
+        try {
+            await(timeout, timeUnit);
+        } catch (InterruptedException | TimeoutException e) {
+            throw new RuntimeException(e);
+        }
+    }
 
-	/**
-	 * Resets the latch so that {@link #isTriggered()} returns false.
-	 */
-	public void reset() {
-		synchronized (lock) {
-			triggered = false;
-		}
-	}
+    /**
+     * Checks if the latch was triggered.
+     *
+     * @return True, if the latch was triggered, false if not.
+     */
+    public boolean isTriggered() {
+        return triggered;
+    }
 
-	@Override
-	public String toString() {
-		return "Latch " + (triggered ? "TRIGGERED" : "PENDING");
-	}
+    public int getWaitersCount() {
+        synchronized (lock) {
+            return waitersSet.size();
+        }
+    }
+
+    /** Resets the latch so that {@link #isTriggered()} returns false. */
+    public void reset() {
+        synchronized (lock) {
+            triggered = false;
+        }
+    }
+
+    @Override
+    public String toString() {
+        return "Latch " + (triggered ? "TRIGGERED" : "PENDING");
+    }
 }

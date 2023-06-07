@@ -21,8 +21,10 @@ package org.apache.flink.client.deployment.executors;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.dag.Pipeline;
 import org.apache.flink.client.FlinkPipelineTranslationUtil;
+import org.apache.flink.client.cli.ClientOptions;
 import org.apache.flink.client.cli.ExecutionConfigAccessor;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.DeploymentOptions;
 import org.apache.flink.configuration.PipelineOptionsInternal;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 
@@ -32,36 +34,50 @@ import java.net.MalformedURLException;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
-/**
- * Utility class with method related to job execution.
- */
+/** Utility class with method related to job execution. */
 public class PipelineExecutorUtils {
 
-	/**
-	 * Creates the {@link JobGraph} corresponding to the provided {@link Pipeline}.
-	 *
-	 * @param pipeline the pipeline whose job graph we are computing
-	 * @param configuration the configuration with the necessary information such as jars and
-	 *                         classpaths to be included, the parallelism of the job and potential
-	 *                         savepoint settings used to bootstrap its state.
-	 * @return the corresponding {@link JobGraph}.
-	 */
-	public static JobGraph getJobGraph(@Nonnull final Pipeline pipeline, @Nonnull final Configuration configuration) throws MalformedURLException {
-		checkNotNull(pipeline);
-		checkNotNull(configuration);
+    /**
+     * Creates the {@link JobGraph} corresponding to the provided {@link Pipeline}.
+     *
+     * @param pipeline the pipeline whose job graph we are computing.
+     * @param configuration the configuration with the necessary information such as jars and
+     *     classpaths to be included, the parallelism of the job and potential savepoint settings
+     *     used to bootstrap its state.
+     * @param userClassloader the classloader which can load user classes.
+     * @return the corresponding {@link JobGraph}.
+     */
+    public static JobGraph getJobGraph(
+            @Nonnull final Pipeline pipeline,
+            @Nonnull final Configuration configuration,
+            @Nonnull ClassLoader userClassloader)
+            throws MalformedURLException {
+        checkNotNull(pipeline);
+        checkNotNull(configuration);
 
-		final ExecutionConfigAccessor executionConfigAccessor = ExecutionConfigAccessor.fromConfiguration(configuration);
-		final JobGraph jobGraph = FlinkPipelineTranslationUtil
-				.getJobGraph(pipeline, configuration, executionConfigAccessor.getParallelism());
+        final ExecutionConfigAccessor executionConfigAccessor =
+                ExecutionConfigAccessor.fromConfiguration(configuration);
+        final JobGraph jobGraph =
+                FlinkPipelineTranslationUtil.getJobGraph(
+                        userClassloader,
+                        pipeline,
+                        configuration,
+                        executionConfigAccessor.getParallelism());
 
-		configuration
-				.getOptional(PipelineOptionsInternal.PIPELINE_FIXED_JOB_ID)
-				.ifPresent(strJobID -> jobGraph.setJobID(JobID.fromHexString(strJobID)));
+        configuration
+                .getOptional(PipelineOptionsInternal.PIPELINE_FIXED_JOB_ID)
+                .ifPresent(strJobID -> jobGraph.setJobID(JobID.fromHexString(strJobID)));
 
-		jobGraph.addJars(executionConfigAccessor.getJars());
-		jobGraph.setClasspaths(executionConfigAccessor.getClasspaths());
-		jobGraph.setSavepointRestoreSettings(executionConfigAccessor.getSavepointRestoreSettings());
+        if (configuration.getBoolean(DeploymentOptions.ATTACHED)
+                && configuration.getBoolean(DeploymentOptions.SHUTDOWN_IF_ATTACHED)) {
+            jobGraph.setInitialClientHeartbeatTimeout(
+                    configuration.getLong(ClientOptions.CLIENT_HEARTBEAT_TIMEOUT));
+        }
 
-		return jobGraph;
-	}
+        jobGraph.addJars(executionConfigAccessor.getJars());
+        jobGraph.setClasspaths(executionConfigAccessor.getClasspaths());
+        jobGraph.setSavepointRestoreSettings(executionConfigAccessor.getSavepointRestoreSettings());
+
+        return jobGraph;
+    }
 }

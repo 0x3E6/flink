@@ -19,119 +19,149 @@
 package org.apache.flink.runtime.security.modules;
 
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.configuration.SecurityOptions;
+import org.apache.flink.runtime.hadoop.HadoopUserUtils;
 import org.apache.flink.runtime.security.SecurityConfiguration;
-import org.apache.flink.runtime.util.HadoopUtils;
+import org.apache.flink.runtime.security.token.hadoop.KerberosLoginProvider;
+import org.apache.flink.util.concurrent.ExecutorThreadFactory;
 
-import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.io.Text;
 import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.UserGroupInformation;
-import org.apache.hadoop.security.token.Token;
-import org.apache.hadoop.security.token.TokenIdentifier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.security.auth.Subject;
+import javax.annotation.Nullable;
 
 import java.io.File;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
-import java.util.Collection;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
-/**
- * Responsible for installing a Hadoop login user.
- */
+/** Responsible for installing a Hadoop login user. */
 public class HadoopModule implements SecurityModule {
 
-	private static final Logger LOG = LoggerFactory.getLogger(HadoopModule.class);
+    private static final Logger LOG = LoggerFactory.getLogger(HadoopModule.class);
 
-	private final SecurityConfiguration securityConfig;
+    private final SecurityConfiguration securityConfig;
 
-	private final Configuration hadoopConfiguration;
+    private final Configuration hadoopConfiguration;
 
-	public HadoopModule(
-		SecurityConfiguration securityConfiguration,
-		Configuration hadoopConfiguration) {
-		this.securityConfig = checkNotNull(securityConfiguration);
-		this.hadoopConfiguration = checkNotNull(hadoopConfiguration);
-	}
+    @Nullable private ScheduledExecutorService tgtRenewalExecutorService;
 
-	@VisibleForTesting
-	public SecurityConfiguration getSecurityConfig() {
-		return securityConfig;
-	}
+    public HadoopModule(
+            SecurityConfiguration securityConfiguration, Configuration hadoopConfiguration) {
+        this.securityConfig = checkNotNull(securityConfiguration);
+        this.hadoopConfiguration = checkNotNull(hadoopConfiguration);
+    }
 
-	@Override
-	public void install() throws SecurityInstallException {
+    @VisibleForTesting
+    public SecurityConfiguration getSecurityConfig() {
+        return securityConfig;
+    }
 
-		UserGroupInformation.setConfiguration(hadoopConfiguration);
+    @Override
+    public void install() throws SecurityInstallException {
 
-		UserGroupInformation loginUser;
+        UserGroupInformation.setConfiguration(hadoopConfiguration);
 
-		try {
-			if (UserGroupInformation.isSecurityEnabled() &&
-				!StringUtils.isBlank(securityConfig.getKeytab()) && !StringUtils.isBlank(securityConfig.getPrincipal())) {
-				String keytabPath = (new File(securityConfig.getKeytab())).getAbsolutePath();
+        UserGroupInformation loginUser;
 
-				UserGroupInformation.loginUserFromKeytab(securityConfig.getPrincipal(), keytabPath);
+        try {
+            KerberosLoginProvider kerberosLoginProvider = new KerberosLoginProvider(securityConfig);
+            if (kerberosLoginProvider.isLoginPossible(true)) {
+                kerberosLoginProvider.doLogin(true);
+                loginUser = UserGroupInformation.getLoginUser();
 
-				loginUser = UserGroupInformation.getLoginUser();
+                if (HadoopUserUtils.isProxyUser((loginUser))
+                        && securityConfig
+                                .getFlinkConfig()
+                                .getBoolean(SecurityOptions.DELEGATION_TOKENS_ENABLED)) {
+                    throw new UnsupportedOperationException(
+                            "Hadoop Proxy user is supported only when"
+                                    + " delegation tokens fetch is managed outside of Flink!"
+                                    + " Please try again with "
+                                    + SecurityOptions.DELEGATION_TOKENS_ENABLED.key()
+                                    + " config set to false!");
+                }
 
-				// supplement with any available tokens
-				String fileLocation = System.getenv(UserGroupInformation.HADOOP_TOKEN_FILE_LOCATION);
-				if (fileLocation != null) {
-					Credentials credentialsFromTokenStorageFile = Credentials.readTokenStorageFile(new File(fileLocation), hadoopConfiguration);
+                if (loginUser.isFromKeytab()) {
+                    String fileLocation =
+                            System.getenv(UserGroupInformation.HADOOP_TOKEN_FILE_LOCATION);
+                    if (fileLocation != null) {
+                        Credentials credentials =
+                                Credentials.readTokenStorageFile(
+                                        new File(fileLocation), hadoopConfiguration);
+                        loginUser.addCredentials(credentials);
+                    }
+                    tgtRenewalExecutorService =
+                            Executors.newSingleThreadScheduledExecutor(
+                                    new ExecutorThreadFactory("TGTRenewalExecutorService"));
+                    startTGTRenewal(tgtRenewalExecutorService, loginUser);
+                }
+            } else {
+                loginUser = UserGroupInformation.getLoginUser();
+            }
 
-					// if UGI uses Kerberos keytabs for login, do not load HDFS delegation token since
-					// the UGI would prefer the delegation token instead, which eventually expires
-					// and does not fallback to using Kerberos tickets
-					Credentials credentialsToBeAdded = new Credentials();
-					final Text hdfsDelegationTokenKind = new Text("HDFS_DELEGATION_TOKEN");
-					Collection<Token<? extends TokenIdentifier>> usrTok = credentialsFromTokenStorageFile.getAllTokens();
-					//If UGI use keytab for login, do not load HDFS delegation token.
-					for (Token<? extends TokenIdentifier> token : usrTok) {
-						if (!token.getKind().equals(hdfsDelegationTokenKind)) {
-							final Text id = new Text(token.getIdentifier());
-							credentialsToBeAdded.addToken(id, token);
-						}
-					}
+            LOG.info("Hadoop user set to {}", loginUser);
+            boolean isKerberosSecurityEnabled =
+                    HadoopUserUtils.hasUserKerberosAuthMethod(loginUser);
+            LOG.info(
+                    "Kerberos security is {}.", isKerberosSecurityEnabled ? "enabled" : "disabled");
+            if (isKerberosSecurityEnabled) {
+                LOG.info(
+                        "Kerberos credentials are {}.",
+                        loginUser.hasKerberosCredentials() ? "valid" : "invalid");
+            }
+        } catch (Throwable ex) {
+            throw new SecurityInstallException("Unable to set the Hadoop login user", ex);
+        }
+    }
 
-					loginUser.addCredentials(credentialsToBeAdded);
-				}
-			} else {
-				// login with current user credentials (e.g. ticket cache, OS login)
-				// note that the stored tokens are read automatically
-				try {
-					//Use reflection API to get the login user object
-					//UserGroupInformation.loginUserFromSubject(null);
-					Method loginUserFromSubjectMethod = UserGroupInformation.class.getMethod("loginUserFromSubject", Subject.class);
-					loginUserFromSubjectMethod.invoke(null, (Subject) null);
-				} catch (NoSuchMethodException e) {
-					LOG.warn("Could not find method implementations in the shaded jar.", e);
-				} catch (InvocationTargetException e) {
-					throw e.getTargetException();
-				}
+    @VisibleForTesting
+    void startTGTRenewal(
+            ScheduledExecutorService tgtRenewalExecutorService, UserGroupInformation loginUser) {
+        LOG.info("Starting TGT renewal task");
 
-				loginUser = UserGroupInformation.getLoginUser();
-			}
+        long tgtRenewalPeriod = securityConfig.getTgtRenewalPeriod().toMillis();
+        tgtRenewalExecutorService.scheduleAtFixedRate(
+                () -> {
+                    // In Hadoop 2.x, renewal of the keytab-based login seems to be automatic, but
+                    // in Hadoop
+                    // 3.x, it is configurable (see
+                    // hadoop.kerberos.keytab.login.autorenewal.enabled, added
+                    // in HADOOP-9567). This task will make sure that the user stays logged in
+                    // regardless of
+                    // that configuration's value. Note that checkTGTAndReloginFromKeytab() is a
+                    // no-op if
+                    // the TGT does not need to be renewed yet.
+                    try {
+                        LOG.debug("Renewing TGT");
+                        loginUser.checkTGTAndReloginFromKeytab();
+                        LOG.debug("TGT renewed successfully");
+                    } catch (Exception e) {
+                        LOG.warn("Error while renewing TGT", e);
+                    }
+                },
+                tgtRenewalPeriod,
+                tgtRenewalPeriod,
+                TimeUnit.MILLISECONDS);
 
-			LOG.info("Hadoop user set to {}", loginUser);
+        LOG.info("TGT renewal task started and reoccur in {} ms", tgtRenewalPeriod);
+    }
 
-			if (HadoopUtils.isKerberosSecurityEnabled(loginUser)) {
-				boolean isCredentialsConfigured = HadoopUtils.areKerberosCredentialsValid(loginUser, securityConfig.useTicketCache());
+    @VisibleForTesting
+    void stopTGTRenewal() {
+        if (tgtRenewalExecutorService != null) {
+            tgtRenewalExecutorService.shutdown();
+            tgtRenewalExecutorService = null;
+        }
+    }
 
-				LOG.info("Kerberos security is enabled and credentials are {}.", isCredentialsConfigured ? "valid" : "invalid");
-			}
-		} catch (Throwable ex) {
-			throw new SecurityInstallException("Unable to set the Hadoop login user", ex);
-		}
-	}
-
-	@Override
-	public void uninstall() {
-		throw new UnsupportedOperationException();
-	}
+    @Override
+    public void uninstall() {
+        stopTGTRenewal();
+    }
 }

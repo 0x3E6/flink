@@ -19,39 +19,48 @@ package org.apache.flink.runtime.io.network.partition;
 
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
+import org.apache.flink.runtime.shuffle.ShuffleDescriptor;
 import org.apache.flink.runtime.taskexecutor.partition.ClusterPartitionReport;
 
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * No-op {@link ResourceManagerPartitionTracker} implementation; does not track any partition and never regards a data
- * set corrupted.
+ * No-op {@link ResourceManagerPartitionTracker} implementation; does not track any partition and
+ * never regards a data set corrupted.
  */
 public enum NoOpResourceManagerPartitionTracker implements ResourceManagerPartitionTracker {
-	INSTANCE;
+    INSTANCE;
 
-	@Override
-	public void processTaskExecutorClusterPartitionReport(ResourceID taskExecutorId, ClusterPartitionReport clusterPartitionReport) {
-	}
+    @Override
+    public void processTaskExecutorClusterPartitionReport(
+            ResourceID taskExecutorId, ClusterPartitionReport clusterPartitionReport) {}
 
-	@Override
-	public void processTaskExecutorShutdown(ResourceID taskExecutorId) {
-	}
+    @Override
+    public void processTaskExecutorShutdown(ResourceID taskExecutorId) {}
 
-	@Override
-	public CompletableFuture<Void> releaseClusterPartitions(IntermediateDataSetID dataSetId) {
-		return CompletableFuture.completedFuture(null);
-	}
+    @Override
+    public CompletableFuture<Void> releaseClusterPartitions(IntermediateDataSetID dataSetId) {
+        return CompletableFuture.completedFuture(null);
+    }
 
-	@Override
-	public Map<IntermediateDataSetID, DataSetMetaInfo> listDataSets() {
-		return Collections.emptyMap();
-	}
+    @Override
+    public Map<IntermediateDataSetID, DataSetMetaInfo> listDataSets() {
+        return Collections.emptyMap();
+    }
 
-	@SuppressWarnings("unused") // unused parameter allows usage as a ResourceManagerPartitionTrackerFactory
-	public static ResourceManagerPartitionTracker get(TaskExecutorClusterPartitionReleaser ignored) {
-		return INSTANCE;
-	}
+    @Override
+    public List<ShuffleDescriptor> getClusterPartitionShuffleDescriptors(
+            IntermediateDataSetID dataSetID) {
+        return Collections.emptyList();
+    }
+
+    @SuppressWarnings(
+            "unused") // unused parameter allows usage as a ResourceManagerPartitionTrackerFactory
+    public static ResourceManagerPartitionTracker get(
+            TaskExecutorClusterPartitionReleaser ignored) {
+        return INSTANCE;
+    }
 }

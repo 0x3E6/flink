@@ -16,49 +16,64 @@
  * limitations under the License.
  */
 
+import { NgIf } from '@angular/common';
 import { ChangeDetectionStrategy, ChangeDetectorRef, Component, OnDestroy, OnInit } from '@angular/core';
-import { ActivatedRoute } from '@angular/router';
+import { ActivatedRoute, NavigationEnd, Router, RouterOutlet } from '@angular/router';
 import { Subject } from 'rxjs';
-import { flatMap, takeUntil } from 'rxjs/operators';
-import { JobService, StatusService } from 'services';
+import { filter, takeUntil } from 'rxjs/operators';
+
+import { JobListComponent } from '@flink-runtime-web/components/job-list/job-list.component';
+import { JobsItem } from '@flink-runtime-web/interfaces';
 
 @Component({
   selector: 'flink-job',
   templateUrl: './job.component.html',
   styleUrls: ['./job.component.less'],
-  changeDetection: ChangeDetectionStrategy.OnPush
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [NgIf, JobListComponent, RouterOutlet],
+  standalone: true
 })
 export class JobComponent implements OnInit, OnDestroy {
-  destroy$ = new Subject();
-  isLoading = true;
+  jobIdSelected?: string;
+  isCompleted = false;
+
+  private readonly destroy$ = new Subject<void>();
 
   constructor(
-    private cdr: ChangeDetectorRef,
     private activatedRoute: ActivatedRoute,
-    private jobService: JobService,
-    private statusService: StatusService
+    private router: Router,
+    private readonly cdr: ChangeDetectorRef
   ) {}
 
-  ngOnInit() {
-    this.statusService.refresh$
-      .pipe(
-        takeUntil(this.destroy$),
-        flatMap(() => this.jobService.loadJob(this.activatedRoute.snapshot.params.jid))
-      )
-      .subscribe(
-        () => {
-          this.isLoading = false;
-          this.cdr.markForCheck();
-        },
-        () => {
-          this.isLoading = false;
-          this.cdr.markForCheck();
-        }
-      );
+  get cardTitle(): string {
+    return this.isCompleted ? 'Completed Jobs' : 'Running Jobs';
   }
 
-  ngOnDestroy() {
+  ngOnInit(): void {
+    this.updateJobIdSelected();
+    this.router.events
+      .pipe(
+        filter(event => event instanceof NavigationEnd),
+        takeUntil(this.destroy$)
+      )
+      .subscribe(() => {
+        this.updateJobIdSelected();
+      });
+  }
+
+  ngOnDestroy(): void {
     this.destroy$.next();
     this.destroy$.complete();
+  }
+
+  navigateToJob(job: JobsItem): void {
+    this.router.navigate([job.jid], { relativeTo: this.activatedRoute }).then();
+  }
+
+  private updateJobIdSelected(): void {
+    const segments = this.router.parseUrl(this.router.url).root.children.primary.segments;
+    this.jobIdSelected = segments[2]?.toString();
+    this.isCompleted = segments[1].path === 'completed';
+    this.cdr.markForCheck();
   }
 }

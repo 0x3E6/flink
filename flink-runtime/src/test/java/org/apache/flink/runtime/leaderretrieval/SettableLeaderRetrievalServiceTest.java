@@ -20,48 +20,49 @@ package org.apache.flink.runtime.leaderretrieval;
 
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
 import org.apache.flink.runtime.leaderelection.TestingListener;
-import org.apache.flink.util.TestLogger;
 
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import static org.hamcrest.Matchers.equalTo;
-import static org.junit.Assert.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Tests for {@link SettableLeaderRetrievalService}.
- */
-public class SettableLeaderRetrievalServiceTest extends TestLogger {
+/** Tests for {@link SettableLeaderRetrievalService}. */
+class SettableLeaderRetrievalServiceTest {
 
-	private SettableLeaderRetrievalService settableLeaderRetrievalService;
+    private SettableLeaderRetrievalService settableLeaderRetrievalService;
 
-	@Before
-	public void setUp() {
-		settableLeaderRetrievalService = new SettableLeaderRetrievalService();
-	}
+    @BeforeEach
+    void setUp() {
+        settableLeaderRetrievalService = new SettableLeaderRetrievalService();
+    }
 
-	@Test
-	public void testNotifyListenerLater() throws Exception {
-		final String localhost = "localhost";
-		settableLeaderRetrievalService.notifyListener(localhost, HighAvailabilityServices.DEFAULT_LEADER_ID);
+    @Test
+    void testNotifyListenerLater() throws Exception {
+        final String localhost = "localhost";
+        settableLeaderRetrievalService.notifyListener(
+                localhost, HighAvailabilityServices.DEFAULT_LEADER_ID);
 
-		final TestingListener listener = new TestingListener();
-		settableLeaderRetrievalService.start(listener);
+        final TestingListener listener = new TestingListener();
+        settableLeaderRetrievalService.start(listener);
 
-		assertThat(listener.getAddress(), equalTo(localhost));
-		assertThat(listener.getLeaderSessionID(), equalTo(HighAvailabilityServices.DEFAULT_LEADER_ID));
-	}
+        listener.waitForNewLeader();
+        assertThat(listener.getAddress()).isEqualTo(localhost);
+        assertThat(listener.getLeaderSessionID())
+                .isEqualTo(HighAvailabilityServices.DEFAULT_LEADER_ID);
+    }
 
-	@Test
-	public void testNotifyListenerImmediately() throws Exception {
-		final TestingListener listener = new TestingListener();
-		settableLeaderRetrievalService.start(listener);
+    @Test
+    void testNotifyListenerImmediately() throws Exception {
+        final TestingListener listener = new TestingListener();
+        settableLeaderRetrievalService.start(listener);
 
-		final String localhost = "localhost";
-		settableLeaderRetrievalService.notifyListener(localhost, HighAvailabilityServices.DEFAULT_LEADER_ID);
+        final String localhost = "localhost";
+        settableLeaderRetrievalService.notifyListener(
+                localhost, HighAvailabilityServices.DEFAULT_LEADER_ID);
 
-		assertThat(listener.getAddress(), equalTo(localhost));
-		assertThat(listener.getLeaderSessionID(), equalTo(HighAvailabilityServices.DEFAULT_LEADER_ID));
-	}
-
+        listener.waitForNewLeader();
+        assertThat(listener.getAddress()).isEqualTo(localhost);
+        assertThat(listener.getLeaderSessionID())
+                .isEqualTo(HighAvailabilityServices.DEFAULT_LEADER_ID);
+    }
 }

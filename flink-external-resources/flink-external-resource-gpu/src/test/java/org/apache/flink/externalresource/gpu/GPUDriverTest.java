@@ -21,86 +21,86 @@ package org.apache.flink.externalresource.gpu;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.IllegalConfigurationException;
 import org.apache.flink.util.FlinkException;
-import org.apache.flink.util.TestLogger;
 
-import org.junit.ClassRule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.io.FileNotFoundException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Set;
+import java.util.UUID;
 
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/**
- * Tests for {@link GPUDriver}.
- */
-public class GPUDriverTest extends TestLogger {
+/** Tests for {@link GPUDriver}. */
+class GPUDriverTest {
 
-	private static final String TESTING_DISCOVERY_SCRIPT_PATH = "src/test/resources/testing-gpu-discovery.sh";
+    private static final String TESTING_DISCOVERY_SCRIPT_PATH =
+            "src/test/resources/testing-gpu-discovery.sh";
 
-	@ClassRule
-	public static final TemporaryFolder TEMP_FOLDER = new TemporaryFolder();
+    @Test
+    void testGPUDriverWithTestScript() throws Exception {
+        final int gpuAmount = 2;
+        final Configuration config = new Configuration();
+        config.setString(GPUDriver.DISCOVERY_SCRIPT_PATH, TESTING_DISCOVERY_SCRIPT_PATH);
 
-	@Test
-	public void testGPUDriverWithTestScript() throws Exception {
-		final int gpuAmount = 2;
-		final Configuration config = new Configuration();
-		config.setString(GPUDriver.DISCOVERY_SCRIPT_PATH, TESTING_DISCOVERY_SCRIPT_PATH);
+        final GPUDriver gpuDriver = new GPUDriver(config);
+        final Set<GPUInfo> gpuResource = gpuDriver.retrieveResourceInfo(gpuAmount);
 
-		final GPUDriver gpuDriver = new GPUDriver(config);
-		final Set<GPUInfo> gpuResource = gpuDriver.retrieveResourceInfo(gpuAmount);
+        assertThat(gpuResource).hasSize(gpuAmount);
+    }
 
-		assertThat(gpuResource.size(), is(gpuAmount));
-	}
+    @Test
+    void testGPUDriverWithInvalidAmount() throws Exception {
+        final int gpuAmount = -1;
+        final Configuration config = new Configuration();
+        config.setString(GPUDriver.DISCOVERY_SCRIPT_PATH, TESTING_DISCOVERY_SCRIPT_PATH);
 
-	@Test(expected = IllegalArgumentException.class)
-	public void testGPUDriverWithInvalidAmount() throws Exception {
-		final int gpuAmount = -1;
-		final Configuration config = new Configuration();
-		config.setString(GPUDriver.DISCOVERY_SCRIPT_PATH, TESTING_DISCOVERY_SCRIPT_PATH);
+        final GPUDriver gpuDriver = new GPUDriver(config);
+        assertThatThrownBy(() -> gpuDriver.retrieveResourceInfo(gpuAmount))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 
-		final GPUDriver gpuDriver = new GPUDriver(config);
-		gpuDriver.retrieveResourceInfo(gpuAmount);
-	}
+    @Test
+    void testGPUDriverWithIllegalConfigTestScript() {
+        final Configuration config = new Configuration();
+        config.setString(GPUDriver.DISCOVERY_SCRIPT_PATH, " ");
 
-	@Test(expected = IllegalConfigurationException.class)
-	public void testGPUDriverWithIllegalConfigTestScript() throws Exception {
-		final Configuration config = new Configuration();
-		config.setString(GPUDriver.DISCOVERY_SCRIPT_PATH, " ");
+        assertThatThrownBy(() -> new GPUDriver(config))
+                .isInstanceOf(IllegalConfigurationException.class);
+    }
 
-		new GPUDriver(config);
-	}
+    @Test
+    void testGPUDriverWithTestScriptDoNotExist() throws Exception {
+        final Configuration config = new Configuration();
+        config.setString(GPUDriver.DISCOVERY_SCRIPT_PATH, "invalid/path");
+        assertThatThrownBy(() -> new GPUDriver(config)).isInstanceOf(FileNotFoundException.class);
+    }
 
-	@Test(expected = FileNotFoundException.class)
-	public void testGPUDriverWithTestScriptDoNotExist() throws Exception {
-		final Configuration config = new Configuration();
-		config.setString(GPUDriver.DISCOVERY_SCRIPT_PATH, "invalid/path");
+    @Test
+    void testGPUDriverWithInexecutableScript(@TempDir Path tempDir) throws Exception {
+        final Configuration config = new Configuration();
 
-		new GPUDriver(config);
-	}
+        Path tempFile = Files.createTempFile(tempDir, UUID.randomUUID().toString(), "");
+        final File inExecutableFile = tempFile.toFile();
+        assertThat(inExecutableFile.setExecutable(false)).isTrue();
 
-	@Test(expected = FlinkException.class)
-	public void testGPUDriverWithInexecutableScript() throws Exception {
-		final Configuration config = new Configuration();
-		final File inexecutableFile = TEMP_FOLDER.newFile();
-		assertTrue(inexecutableFile.setExecutable(false));
+        config.setString(GPUDriver.DISCOVERY_SCRIPT_PATH, inExecutableFile.getAbsolutePath());
 
-		config.setString(GPUDriver.DISCOVERY_SCRIPT_PATH, inexecutableFile.getAbsolutePath());
+        assertThatThrownBy(() -> new GPUDriver(config)).isInstanceOf(FlinkException.class);
+    }
 
-		new GPUDriver(config);
-	}
+    @Test
+    void testGPUDriverWithTestScriptExitWithNonZero() throws Exception {
+        final Configuration config = new Configuration();
+        config.setString(GPUDriver.DISCOVERY_SCRIPT_PATH, TESTING_DISCOVERY_SCRIPT_PATH);
+        config.setString(GPUDriver.DISCOVERY_SCRIPT_ARG, "--exit-non-zero");
 
-	@Test(expected = FlinkException.class)
-	public void testGPUDriverWithTestScriptExitWithNonZero() throws Exception {
-		final Configuration config = new Configuration();
-		config.setString(GPUDriver.DISCOVERY_SCRIPT_PATH, TESTING_DISCOVERY_SCRIPT_PATH);
-		config.setString(GPUDriver.DISCOVERY_SCRIPT_ARG, "--exit-non-zero");
-
-		final GPUDriver gpuDriver = new GPUDriver(config);
-		gpuDriver.retrieveResourceInfo(1);
-	}
+        final GPUDriver gpuDriver = new GPUDriver(config);
+        assertThatThrownBy(() -> gpuDriver.retrieveResourceInfo(1))
+                .isInstanceOf(FlinkException.class);
+    }
 }

@@ -18,6 +18,7 @@
 
 package org.apache.flink.api.java.typeutils.runtime;
 
+import org.apache.flink.FlinkVersion;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.common.typeutils.TypeSerializerMatchers;
 import org.apache.flink.api.common.typeutils.TypeSerializerSchemaCompatibility;
@@ -25,91 +26,80 @@ import org.apache.flink.api.common.typeutils.TypeSerializerUpgradeTestBase;
 import org.apache.flink.api.common.typeutils.base.IntSerializer;
 import org.apache.flink.api.common.typeutils.base.StringSerializer;
 import org.apache.flink.api.java.tuple.Tuple3;
-import org.apache.flink.testutils.migration.MigrationVersion;
 
 import org.hamcrest.Matcher;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
 
 import java.util.ArrayList;
 import java.util.Collection;
 
 import static org.hamcrest.Matchers.is;
 
-/**
- * {@link TupleSerializer} upgrade test.
- */
-@RunWith(Parameterized.class)
-public class TupleSerializerUpgradeTest
-		extends TypeSerializerUpgradeTestBase<Tuple3<String, String, Integer>, Tuple3<String, String, Integer>> {
+/** {@link TupleSerializer} upgrade test. */
+class TupleSerializerUpgradeTest
+        extends TypeSerializerUpgradeTestBase<
+                Tuple3<String, String, Integer>, Tuple3<String, String, Integer>> {
 
-	public TupleSerializerUpgradeTest(
-			TestSpecification<Tuple3<String, String, Integer>, Tuple3<String, String, Integer>> testSpecification) {
-		super(testSpecification);
-	}
+    public Collection<TestSpecification<?, ?>> createTestSpecifications(FlinkVersion flinkVersion)
+            throws Exception {
 
-	@Parameterized.Parameters(name = "Test Specification = {0}")
-	public static Collection<TestSpecification<?, ?>> testSpecifications() throws Exception {
+        ArrayList<TestSpecification<?, ?>> testSpecifications = new ArrayList<>();
+        testSpecifications.add(
+                new TestSpecification<>(
+                        "tuple-serializer",
+                        flinkVersion,
+                        TupleSerializerSetup.class,
+                        TupleSerializerVerifier.class));
 
-		ArrayList<TestSpecification<?, ?>> testSpecifications = new ArrayList<>();
-		for (MigrationVersion migrationVersion : MIGRATION_VERSIONS) {
-			testSpecifications.add(
-					new TestSpecification<>(
-							"tuple-serializer",
-							migrationVersion,
-							TupleSerializerSetup.class,
-							TupleSerializerVerifier.class));
-		}
+        return testSpecifications;
+    }
 
-		return testSpecifications;
-	}
+    // ----------------------------------------------------------------------------------------------
+    //  Specification for "tuple-serializer"
+    // ----------------------------------------------------------------------------------------------
 
-	// ----------------------------------------------------------------------------------------------
-	//  Specification for "tuple-serializer"
-	// ----------------------------------------------------------------------------------------------
+    public static final class TupleSerializerSetup
+            implements TypeSerializerUpgradeTestBase.PreUpgradeSetup<
+                    Tuple3<String, String, Integer>> {
 
-	public static final class TupleSerializerSetup
-			implements TypeSerializerUpgradeTestBase.PreUpgradeSetup<Tuple3<String, String, Integer>> {
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        @Override
+        public TypeSerializer<Tuple3<String, String, Integer>> createPriorSerializer() {
+            return new TupleSerializer(
+                    Tuple3.class,
+                    new TypeSerializer[] {
+                        StringSerializer.INSTANCE, StringSerializer.INSTANCE, IntSerializer.INSTANCE
+                    });
+        }
 
-		@SuppressWarnings({"unchecked", "rawtypes"})
-		@Override
-		public TypeSerializer<Tuple3<String, String, Integer>> createPriorSerializer() {
-			return new TupleSerializer(
-					Tuple3.class,
-					new TypeSerializer[]{
-							StringSerializer.INSTANCE,
-							StringSerializer.INSTANCE,
-							IntSerializer.INSTANCE});
-		}
+        @Override
+        public Tuple3<String, String, Integer> createTestData() {
+            return new Tuple3<>("hello Gordon", "ciao", 14);
+        }
+    }
 
-		@Override
-		public Tuple3<String, String, Integer> createTestData() {
-			return new Tuple3<>("hello Gordon", "ciao", 14);
-		}
-	}
+    public static final class TupleSerializerVerifier
+            implements TypeSerializerUpgradeTestBase.UpgradeVerifier<
+                    Tuple3<String, String, Integer>> {
 
-	public static final class TupleSerializerVerifier
-			implements TypeSerializerUpgradeTestBase.UpgradeVerifier<Tuple3<String, String, Integer>> {
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        @Override
+        public TypeSerializer<Tuple3<String, String, Integer>> createUpgradedSerializer() {
+            return new TupleSerializer(
+                    Tuple3.class,
+                    new TypeSerializer[] {
+                        StringSerializer.INSTANCE, StringSerializer.INSTANCE, IntSerializer.INSTANCE
+                    });
+        }
 
-		@SuppressWarnings({"unchecked", "rawtypes"})
-		@Override
-		public TypeSerializer<Tuple3<String, String, Integer>> createUpgradedSerializer() {
-			return new TupleSerializer(
-					Tuple3.class,
-					new TypeSerializer[]{
-							StringSerializer.INSTANCE,
-							StringSerializer.INSTANCE,
-							IntSerializer.INSTANCE});
-		}
+        @Override
+        public Matcher<Tuple3<String, String, Integer>> testDataMatcher() {
+            return is(new Tuple3<>("hello Gordon", "ciao", 14));
+        }
 
-		@Override
-		public Matcher<Tuple3<String, String, Integer>> testDataMatcher() {
-			return is(new Tuple3<>("hello Gordon", "ciao", 14));
-		}
-
-		@Override
-		public Matcher<TypeSerializerSchemaCompatibility<Tuple3<String, String, Integer>>> schemaCompatibilityMatcher(MigrationVersion version) {
-			return TypeSerializerMatchers.isCompatibleAsIs();
-		}
-	}
+        @Override
+        public Matcher<TypeSerializerSchemaCompatibility<Tuple3<String, String, Integer>>>
+                schemaCompatibilityMatcher(FlinkVersion version) {
+            return TypeSerializerMatchers.isCompatibleAsIs();
+        }
+    }
 }

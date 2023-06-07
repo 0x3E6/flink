@@ -18,137 +18,182 @@
 
 package org.apache.flink.runtime.state.filesystem;
 
+import org.apache.flink.core.fs.EntropyInjectingFileSystem;
 import org.apache.flink.core.fs.FileSystem;
-import org.apache.flink.core.fs.Path;
+import org.apache.flink.core.fs.local.LocalFileSystem;
 import org.apache.flink.runtime.state.CheckpointedStateScope;
 import org.apache.flink.runtime.state.StreamStateHandle;
 
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Path;
+import java.util.Objects;
 
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.not;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
-/**
- * Unit tests for the {@link FsCheckpointStreamFactory}.
- */
+/** Unit tests for the {@link FsCheckpointStreamFactory}. */
 public class FsCheckpointStreamFactoryTest {
 
-	@Rule
-	public final TemporaryFolder TMP = new TemporaryFolder();
+    @TempDir private Path exclusiveStateDir;
+    @TempDir private Path sharedStateDir;
 
-	private Path exclusiveStateDir;
-	private Path sharedStateDir;
+    // ------------------------------------------------------------------------
+    //  tests
+    // ------------------------------------------------------------------------
 
-	@Before
-	public void createStateDirectories() throws IOException {
-		exclusiveStateDir = Path.fromLocalFile(TMP.newFolder("exclusive"));
-		sharedStateDir = Path.fromLocalFile(TMP.newFolder("shared"));
-	}
+    @Test
+    @SuppressWarnings("ConstantConditions")
+    public void testWriteFlushesIfAboveThreshold() throws IOException {
+        int fileSizeThreshold = 100;
+        final FsCheckpointStreamFactory factory =
+                createFactory(
+                        FileSystem.getLocalFileSystem(), fileSizeThreshold, fileSizeThreshold);
+        final FsCheckpointStreamFactory.FsCheckpointStateOutputStream stream =
+                factory.createCheckpointStateOutputStream(CheckpointedStateScope.EXCLUSIVE);
+        stream.write(new byte[fileSizeThreshold]);
+        File[] files = new File(exclusiveStateDir.toUri()).listFiles();
+        assertEquals(1, files.length);
+        File file = files[0];
+        assertEquals(fileSizeThreshold, file.length());
+        stream.write(new byte[fileSizeThreshold - 1]); // should buffer without flushing
+        stream.write(127); // should buffer without flushing
+        assertEquals(fileSizeThreshold, file.length());
+    }
 
-	// ------------------------------------------------------------------------
-	//  tests
-	// ------------------------------------------------------------------------
+    @Test
+    public void testExclusiveStateHasRelativePathHandles() throws IOException {
+        final FsCheckpointStreamFactory factory = createFactory(FileSystem.getLocalFileSystem(), 0);
 
-	@Test
-	@SuppressWarnings("ConstantConditions")
-	public void testWriteFlushesIfAboveThreshold() throws IOException {
-		int fileSizeThreshold = 100;
-		final FsCheckpointStreamFactory factory = createFactory(FileSystem.getLocalFileSystem(), fileSizeThreshold, fileSizeThreshold);
-		final FsCheckpointStreamFactory.FsCheckpointStateOutputStream stream = factory.createCheckpointStateOutputStream(CheckpointedStateScope.EXCLUSIVE);
-		stream.write(new byte[fileSizeThreshold]);
-		File[] files = new File(exclusiveStateDir.toUri()).listFiles();
-		assertEquals(1, files.length);
-		File file = files[0];
-		assertEquals(fileSizeThreshold, file.length());
-		stream.write(new byte[fileSizeThreshold - 1]); // should buffer without flushing
-		stream.write(127); // should buffer without flushing
-		assertEquals(fileSizeThreshold, file.length());
-	}
+        final FsCheckpointStreamFactory.FsCheckpointStateOutputStream stream =
+                factory.createCheckpointStateOutputStream(CheckpointedStateScope.EXCLUSIVE);
+        stream.write(1657);
+        final StreamStateHandle handle = stream.closeAndGetHandle();
 
-	@Test
-	public void testExclusiveStateHasRelativePathHandles() throws IOException {
-		final FsCheckpointStreamFactory factory = createFactory(FileSystem.getLocalFileSystem(), 0);
+        assertThat(handle, instanceOf(RelativeFileStateHandle.class));
+        assertPathsEqual(
+                exclusiveStateDir, ((RelativeFileStateHandle) handle).getFilePath().getParent());
+    }
 
-		final FsCheckpointStreamFactory.FsCheckpointStateOutputStream stream =
-				factory.createCheckpointStateOutputStream(CheckpointedStateScope.EXCLUSIVE);
-		stream.write(1657);
-		final StreamStateHandle handle = stream.closeAndGetHandle();
+    @Test
+    public void testSharedStateHasAbsolutePathHandles() throws IOException {
+        final FsCheckpointStreamFactory factory = createFactory(FileSystem.getLocalFileSystem(), 0);
 
-		assertThat(handle, instanceOf(RelativeFileStateHandle.class));
-		assertPathsEqual(exclusiveStateDir, ((RelativeFileStateHandle) handle).getFilePath().getParent());
-	}
+        final FsCheckpointStreamFactory.FsCheckpointStateOutputStream stream =
+                factory.createCheckpointStateOutputStream(CheckpointedStateScope.SHARED);
+        stream.write(0);
+        final StreamStateHandle handle = stream.closeAndGetHandle();
 
-	@Test
-	public void testSharedStateHasAbsolutePathHandles() throws IOException {
-		final FsCheckpointStreamFactory factory = createFactory(FileSystem.getLocalFileSystem(), 0);
+        assertThat(handle, instanceOf(FileStateHandle.class));
+        assertThat(handle, not(instanceOf(RelativeFileStateHandle.class)));
+        assertPathsEqual(sharedStateDir, ((FileStateHandle) handle).getFilePath().getParent());
+    }
 
-		final FsCheckpointStreamFactory.FsCheckpointStateOutputStream stream =
-			factory.createCheckpointStateOutputStream(CheckpointedStateScope.SHARED);
-		stream.write(0);
-		final StreamStateHandle handle = stream.closeAndGetHandle();
+    @Test
+    public void testEntropyMakesExclusiveStateAbsolutePaths() throws IOException {
+        final FsStateBackendEntropyTest.TestEntropyAwareFs fs =
+                new FsStateBackendEntropyTest.TestEntropyAwareFs();
+        final FsCheckpointStreamFactory factory = createFactory(fs, 0);
 
-		assertThat(handle, instanceOf(FileStateHandle.class));
-		assertThat(handle, not(instanceOf(RelativeFileStateHandle.class)));
-		assertPathsEqual(sharedStateDir, ((FileStateHandle) handle).getFilePath().getParent());
-	}
+        final FsCheckpointStreamFactory.FsCheckpointStateOutputStream stream =
+                factory.createCheckpointStateOutputStream(CheckpointedStateScope.EXCLUSIVE);
+        stream.write(0);
+        final StreamStateHandle handle = stream.closeAndGetHandle();
 
-	@Test
-	public void testEntropyMakesExclusiveStateAbsolutePaths() throws IOException{
-		final FsCheckpointStreamFactory factory = createFactory(new FsStateBackendEntropyTest.TestEntropyAwareFs(), 0);
+        assertThat(handle, instanceOf(FileStateHandle.class));
+        assertThat(handle, not(instanceOf(RelativeFileStateHandle.class)));
+        assertPathsEqual(
+                exclusiveStateDir.resolve(fs.generateEntropy()),
+                ((FileStateHandle) handle).getFilePath().getParent());
+    }
 
-		final FsCheckpointStreamFactory.FsCheckpointStateOutputStream stream =
-			factory.createCheckpointStateOutputStream(CheckpointedStateScope.EXCLUSIVE);
-		stream.write(0);
-		final StreamStateHandle handle = stream.closeAndGetHandle();
+    @Test
+    public void testFSWithDisabledEntropyHasRelativePaths() throws IOException {
+        final FsCheckpointStreamFactory factory = createFactory(new DisabledEntropyFS(), 0);
 
-		assertThat(handle, instanceOf(FileStateHandle.class));
-		assertThat(handle, not(instanceOf(RelativeFileStateHandle.class)));
-		assertPathsEqual(exclusiveStateDir, ((FileStateHandle) handle).getFilePath().getParent());
-	}
+        final FsCheckpointStreamFactory.FsCheckpointStateOutputStream stream =
+                factory.createCheckpointStateOutputStream(CheckpointedStateScope.EXCLUSIVE);
+        stream.write(0);
+        final StreamStateHandle handle = stream.closeAndGetHandle();
 
-	@Test
-	public void testFlushUnderThreshold() throws IOException {
-		flushAndVerify(10, 10, true);
-	}
+        assertThat(handle, instanceOf(RelativeFileStateHandle.class));
+        assertPathsEqual(
+                exclusiveStateDir, ((RelativeFileStateHandle) handle).getFilePath().getParent());
+    }
 
-	@Test
-	public void testFlushAboveThreshold() throws IOException {
-		flushAndVerify(10, 11, false);
-	}
+    @Test
+    public void testFlushUnderThreshold() throws IOException {
+        flushAndVerify(10, 10, true);
+    }
 
-	private void flushAndVerify(int minFileSize, int bytesToFlush, boolean expectEmpty) throws IOException {
-		FsCheckpointStreamFactory.FsCheckpointStateOutputStream stream =
-				createFactory(new FsStateBackendEntropyTest.TestEntropyAwareFs(), minFileSize)
-						.createCheckpointStateOutputStream(CheckpointedStateScope.EXCLUSIVE);
+    @Test
+    public void testFlushAboveThreshold() throws IOException {
+        flushAndVerify(10, 11, false);
+    }
 
-		stream.write(new byte[bytesToFlush], 0, bytesToFlush);
-		stream.flush();
-		assertEquals(expectEmpty ? 0 : 1, new File(exclusiveStateDir.toUri()).listFiles().length);
-	}
+    private void flushAndVerify(int minFileSize, int bytesToFlush, boolean expectEmpty)
+            throws IOException {
+        FsCheckpointStreamFactory.FsCheckpointStateOutputStream stream =
+                createFactory(new FsStateBackendEntropyTest.TestEntropyAwareFs(), minFileSize)
+                        .createCheckpointStateOutputStream(CheckpointedStateScope.EXCLUSIVE);
 
-	// ------------------------------------------------------------------------
-	//  test utils
-	// ------------------------------------------------------------------------
+        stream.write(new byte[bytesToFlush], 0, bytesToFlush);
+        stream.flush();
+        assertEquals(expectEmpty ? 0 : 1, new File(exclusiveStateDir.toUri()).listFiles().length);
+    }
 
-	private static void assertPathsEqual(Path expected, Path actual) {
-		final Path reNormalizedExpected = new Path(expected.toString());
-		final Path reNormalizedActual = new Path(actual.toString());
-		assertEquals(reNormalizedExpected, reNormalizedActual);
-	}
+    // ------------------------------------------------------------------------
+    //  test utils
+    // ------------------------------------------------------------------------
 
-	private FsCheckpointStreamFactory createFactory(FileSystem fs, int fileSizeThreshold) {
-		return createFactory(fs, fileSizeThreshold, 4096);
-	}
+    private static void assertPathsEqual(Path expected, org.apache.flink.core.fs.Path actual) {
+        final org.apache.flink.core.fs.Path reNormalizedExpected =
+                new org.apache.flink.core.fs.Path(
+                        new org.apache.flink.core.fs.Path(expected.toUri()).toString());
+        assertEquals(reNormalizedExpected, actual);
+    }
 
-	private FsCheckpointStreamFactory createFactory(FileSystem fs, int fileSizeThreshold, int bufferSize) {
-		return new FsCheckpointStreamFactory(fs, exclusiveStateDir, sharedStateDir, fileSizeThreshold, bufferSize);
-	}
+    private FsCheckpointStreamFactory createFactory(FileSystem fs, int fileSizeThreshold) {
+        return createFactory(fs, fileSizeThreshold, 4096);
+    }
+
+    private FsCheckpointStreamFactory createFactory(
+            FsStateBackendEntropyTest.TestEntropyAwareFs fs, int fileSizeThreshold) {
+        final Path exclusiveStateDirWithEntropy =
+                exclusiveStateDir.resolve(Objects.requireNonNull(fs.getEntropyInjectionKey()));
+        return new FsCheckpointStreamFactory(
+                fs,
+                new org.apache.flink.core.fs.Path(exclusiveStateDirWithEntropy.toUri()),
+                new org.apache.flink.core.fs.Path(sharedStateDir.toUri()),
+                fileSizeThreshold,
+                4096);
+    }
+
+    private FsCheckpointStreamFactory createFactory(
+            FileSystem fs, int fileSizeThreshold, int bufferSize) {
+        return new FsCheckpointStreamFactory(
+                fs,
+                new org.apache.flink.core.fs.Path(exclusiveStateDir.toUri()),
+                new org.apache.flink.core.fs.Path(sharedStateDir.toUri()),
+                fileSizeThreshold,
+                bufferSize);
+    }
+
+    private static final class DisabledEntropyFS extends LocalFileSystem
+            implements EntropyInjectingFileSystem {
+        @Override
+        public String getEntropyInjectionKey() {
+            return null;
+        }
+
+        @Override
+        public String generateEntropy() {
+            return null;
+        }
+    }
 }

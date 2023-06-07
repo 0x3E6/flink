@@ -22,40 +22,40 @@ import org.apache.flink.runtime.rest.HttpMethodWrapper;
 import org.apache.flink.runtime.rest.handler.cluster.JobManagerCustomLogHandler;
 import org.apache.flink.runtime.rest.messages.EmptyRequestBody;
 import org.apache.flink.runtime.rest.messages.LogFileNamePathParameter;
-import org.apache.flink.runtime.rest.messages.UntypedResponseMessageHeaders;
+import org.apache.flink.runtime.rest.messages.RuntimeUntypedResponseMessageHeaders;
 
-/**
- * Headers for the {@link JobManagerCustomLogHandler}.
- */
-public class JobManagerCustomLogHeaders implements UntypedResponseMessageHeaders<EmptyRequestBody, FileMessageParameters> {
+/** Headers for the {@link JobManagerCustomLogHandler}. */
+public class JobManagerCustomLogHeaders
+        implements RuntimeUntypedResponseMessageHeaders<EmptyRequestBody, FileMessageParameters> {
 
-	private static final JobManagerCustomLogHeaders INSTANCE = new JobManagerCustomLogHeaders();
+    private static final JobManagerCustomLogHeaders INSTANCE = new JobManagerCustomLogHeaders();
 
-	private static final String URL = String.format("/jobmanager/logs/:%s", LogFileNamePathParameter.KEY);
+    private static final String URL =
+            String.format("/jobmanager/logs/:%s", LogFileNamePathParameter.KEY);
 
-	private JobManagerCustomLogHeaders() {}
+    private JobManagerCustomLogHeaders() {}
 
-	public static JobManagerCustomLogHeaders getInstance() {
-		return INSTANCE;
-	}
+    public static JobManagerCustomLogHeaders getInstance() {
+        return INSTANCE;
+    }
 
-	@Override
-	public Class<EmptyRequestBody> getRequestClass() {
-		return EmptyRequestBody.class;
-	}
+    @Override
+    public Class<EmptyRequestBody> getRequestClass() {
+        return EmptyRequestBody.class;
+    }
 
-	@Override
-	public FileMessageParameters getUnresolvedMessageParameters() {
-		return new FileMessageParameters();
-	}
+    @Override
+    public FileMessageParameters getUnresolvedMessageParameters() {
+        return new FileMessageParameters();
+    }
 
-	@Override
-	public HttpMethodWrapper getHttpMethod() {
-		return HttpMethodWrapper.GET;
-	}
+    @Override
+    public HttpMethodWrapper getHttpMethod() {
+        return HttpMethodWrapper.GET;
+    }
 
-	@Override
-	public String getTargetRestEndpointURL() {
-		return URL;
-	}
+    @Override
+    public String getTargetRestEndpointURL() {
+        return URL;
+    }
 }

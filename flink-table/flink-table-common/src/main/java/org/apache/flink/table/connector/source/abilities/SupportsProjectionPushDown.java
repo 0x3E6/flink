@@ -19,54 +19,74 @@
 package org.apache.flink.table.connector.source.abilities;
 
 import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.table.catalog.ResolvedSchema;
+import org.apache.flink.table.connector.Projection;
 import org.apache.flink.table.connector.source.ScanTableSource;
+import org.apache.flink.table.data.utils.ProjectedRowData;
+import org.apache.flink.table.types.DataType;
 
 /**
  * Enables to push down a (possibly nested) projection into a {@link ScanTableSource}.
  *
  * <p>Given the following SQL:
+ *
  * <pre>{@code
- *   CREATE TABLE t (i INT, r ROW < d DOUBLE, b BOOLEAN>, s STRING);
- *   SELECT s, r.d FROM t;
+ * CREATE TABLE t (i INT, r ROW < d DOUBLE, b BOOLEAN>, s STRING);
+ * SELECT s, r.d FROM t;
  * }</pre>
  *
- * <p>In the above example, {@code r.d} and {@code s} are required fields. Other fields can be skipped
- * in a projection. Compared to table's schema, fields are reordered.
+ * <p>In the above example, {@code r.d} and {@code s} are required fields. Other fields can be
+ * skipped in a projection. Compared to table's schema, fields are reordered.
  *
- * <p>By default, if this interface is not implemented, a projection is applied in a subsequent operation
- * after the source.
+ * <p>By default, if this interface is not implemented, a projection is applied in a subsequent
+ * operation after the source.
  *
  * <p>For efficiency, a source can push a projection further down in order to be close to the actual
- * data generation. A projection is only selecting fields that are used by a query (possibly in a different
- * field order). It does not contain any computation. A projection can either be performed on the fields of
- * the top-level row only or consider nested fields as well (see {@link #supportsNestedProjection()}).
+ * data generation. A projection is only selecting fields that are used by a query (possibly in a
+ * different field order). It does not contain any computation. A projection can either be performed
+ * on the fields of the top-level row only or consider nested fields as well (see {@link
+ * #supportsNestedProjection()}).
  *
- * <p>Note: If a source implements {@link SupportsComputedColumnPushDown}, the projection must be applied
- * to the physical data in the first step. The {@link SupportsComputedColumnPushDown} (already aware of the projection)
- * will then use the projected physical data and insert computed columns into the result.
+ * @see Projection
+ * @see ProjectedRowData
  */
 @PublicEvolving
 public interface SupportsProjectionPushDown {
 
-	/**
-	 * Returns whether this source supports nested projection.
-	 */
-	boolean supportsNestedProjection();
+    /** Returns whether this source supports nested projection. */
+    boolean supportsNestedProjection();
 
-	/**
-	 * Provides the field index paths that should be used for a projection. The indices are 0-based and
-	 * support fields within (possibly nested) structures if this is enabled via {@link #supportsNestedProjection()}.
-	 *
-	 * <p>In the example mentioned in {@link SupportsProjectionPushDown}, this method would receive:
-	 * <ul>
-	 *     <li>{@code [[2], [1]]} which is equivalent to {@code [["s"], ["r"]]} if {@link #supportsNestedProjection()}
-	 *     returns false.
-	 *     <li>{@code [[2], [1, 0]]} which is equivalent to {@code [["s"], ["r", "d"]]]} if {@link #supportsNestedProjection()}
-	 *     returns true.
-	 * </ul>
-	 *
-	 * @param projectedFields field index paths of all fields that must be present in the physically
-	 *                        produced data
-	 */
-	void applyProjection(int[][] projectedFields);
+    /** @deprecated Please implement {@link #applyProjection(int[][], DataType)} */
+    @Deprecated
+    default void applyProjection(int[][] projectedFields) {
+        throw new UnsupportedOperationException(
+                "No implementation provided for SupportsProjectionPushDown. "
+                        + "Please implement SupportsProjectionPushDown#applyProjection(int[][], DataType)");
+    }
+
+    /**
+     * Provides the field index paths that should be used for a projection. The indices are 0-based
+     * and support fields within (possibly nested) structures if this is enabled via {@link
+     * #supportsNestedProjection()}.
+     *
+     * <p>In the example mentioned in {@link SupportsProjectionPushDown}, this method would receive:
+     *
+     * <ul>
+     *   <li>{@code [[2], [1]]} which is equivalent to {@code [["s"], ["r"]]} if {@link
+     *       #supportsNestedProjection()} returns false.
+     *   <li>{@code [[2], [1, 0]]} which is equivalent to {@code [["s"], ["r", "d"]]]} if {@link
+     *       #supportsNestedProjection()} returns true.
+     * </ul>
+     *
+     * <p>Note: Use the passed data type instead of {@link ResolvedSchema#toPhysicalRowDataType()}
+     * for describing the final output data type when creating {@link TypeInformation}.
+     *
+     * @param projectedFields field index paths of all fields that must be present in the physically
+     *     produced data
+     * @param producedDataType the final output type of the source, with the projection applied
+     */
+    default void applyProjection(int[][] projectedFields, DataType producedDataType) {
+        applyProjection(projectedFields);
+    }
 }

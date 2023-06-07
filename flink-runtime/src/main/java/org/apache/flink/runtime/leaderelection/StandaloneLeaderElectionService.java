@@ -21,8 +21,6 @@ package org.apache.flink.runtime.leaderelection;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
 import org.apache.flink.util.Preconditions;
 
-import javax.annotation.Nonnull;
-
 import java.util.UUID;
 
 /**
@@ -31,36 +29,40 @@ import java.util.UUID;
  * grants him the leadership upon start up. Furthermore, there is no communication needed between
  * multiple standalone leader election services.
  */
-public class StandaloneLeaderElectionService implements LeaderElectionService {
+public class StandaloneLeaderElectionService extends AbstractLeaderElectionService {
 
-	private LeaderContender contender = null;
+    private LeaderContender contender = null;
 
-	@Override
-	public void start(LeaderContender newContender) throws Exception {
-		if (contender != null) {
-			// Service was already started
-			throw new IllegalArgumentException("Leader election service cannot be started multiple times.");
-		}
+    @Override
+    protected void register(LeaderContender newContender) throws Exception {
+        if (contender != null) {
+            // Service was already started
+            throw new IllegalArgumentException(
+                    "Leader election service cannot be started multiple times.");
+        }
 
-		contender = Preconditions.checkNotNull(newContender);
+        contender = Preconditions.checkNotNull(newContender);
 
-		// directly grant leadership to the given contender
-		contender.grantLeadership(HighAvailabilityServices.DEFAULT_LEADER_ID);
-	}
+        // directly grant leadership to the given contender
+        contender.grantLeadership(HighAvailabilityServices.DEFAULT_LEADER_ID);
+    }
 
-	@Override
-	public void stop() {
-		if (contender != null) {
-			contender.revokeLeadership();
-			contender = null;
-		}
-	}
+    @Override
+    protected void remove(LeaderContender contender) {
+        Preconditions.checkArgument(contender == this.contender);
 
-	@Override
-	public void confirmLeadership(UUID leaderSessionID, String leaderAddress) {}
+        if (this.contender != null) {
+            this.contender.revokeLeadership();
+            this.contender = null;
+        }
+    }
 
-	@Override
-	public boolean hasLeadership(@Nonnull UUID leaderSessionId) {
-		return (contender != null && HighAvailabilityServices.DEFAULT_LEADER_ID.equals(leaderSessionId));
-	}
+    @Override
+    protected void confirmLeadership(UUID leaderSessionID, String leaderAddress) {}
+
+    @Override
+    protected boolean hasLeadership(UUID leaderSessionId) {
+        return contender != null
+                && HighAvailabilityServices.DEFAULT_LEADER_ID.equals(leaderSessionId);
+    }
 }

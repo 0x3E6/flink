@@ -22,54 +22,74 @@ import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 
 import java.io.Serializable;
 
-/**
- * Class containing information about the available cluster resources.
- */
+/** Class containing information about the available cluster resources. */
 public class ResourceOverview implements Serializable {
 
-	private static final long serialVersionUID = 7618746920569224557L;
+    private static final long serialVersionUID = 7618746920569224557L;
 
-	private static final ResourceOverview EMPTY_RESOURCE_OVERVIEW = new ResourceOverview(0, 0, 0, ResourceProfile.ZERO, ResourceProfile.ZERO);
+    private static final ResourceOverview EMPTY_RESOURCE_OVERVIEW =
+            new ResourceOverview(0, 0, 0, 0, 0, ResourceProfile.ZERO, ResourceProfile.ZERO);
 
-	private final int numberTaskManagers;
+    private final int numberTaskManagers;
 
-	private final int numberRegisteredSlots;
+    private final int numberRegisteredSlots;
 
-	private final int numberFreeSlots;
+    private final int numberFreeSlots;
 
-	private final ResourceProfile totalResource;
+    private final int numberBlockedTaskManagers;
 
-	private final ResourceProfile freeResource;
+    private final int numberBlockedFreeSlots;
 
-	public ResourceOverview(int numberTaskManagers, int numberRegisteredSlots, int numberFreeSlots, ResourceProfile totalResource, ResourceProfile freeResource) {
-		this.numberTaskManagers = numberTaskManagers;
-		this.numberRegisteredSlots = numberRegisteredSlots;
-		this.numberFreeSlots = numberFreeSlots;
-		this.totalResource = totalResource;
-		this.freeResource = freeResource;
-	}
+    private final ResourceProfile totalResource;
 
-	public int getNumberTaskManagers() {
-		return numberTaskManagers;
-	}
+    private final ResourceProfile freeResource;
 
-	public int getNumberRegisteredSlots() {
-		return numberRegisteredSlots;
-	}
+    public ResourceOverview(
+            int numberTaskManagers,
+            int numberRegisteredSlots,
+            int numberFreeSlots,
+            int numberBlockedTaskManagers,
+            int numberBlockedFreeSlots,
+            ResourceProfile totalResource,
+            ResourceProfile freeResource) {
+        this.numberTaskManagers = numberTaskManagers;
+        this.numberRegisteredSlots = numberRegisteredSlots;
+        this.numberFreeSlots = numberFreeSlots;
+        this.numberBlockedTaskManagers = numberBlockedTaskManagers;
+        this.numberBlockedFreeSlots = numberBlockedFreeSlots;
+        this.totalResource = totalResource;
+        this.freeResource = freeResource;
+    }
 
-	public int getNumberFreeSlots() {
-		return numberFreeSlots;
-	}
+    public int getNumberTaskManagers() {
+        return numberTaskManagers;
+    }
 
-	public ResourceProfile getTotalResource() {
-		return totalResource;
-	}
+    public int getNumberRegisteredSlots() {
+        return numberRegisteredSlots;
+    }
 
-	public ResourceProfile getFreeResource() {
-		return freeResource;
-	}
+    public int getNumberFreeSlots() {
+        return numberFreeSlots;
+    }
 
-	public static ResourceOverview empty() {
-		return EMPTY_RESOURCE_OVERVIEW;
-	}
+    public int getNumberBlockedTaskManagers() {
+        return numberBlockedTaskManagers;
+    }
+
+    public int getNumberBlockedFreeSlots() {
+        return numberBlockedFreeSlots;
+    }
+
+    public ResourceProfile getTotalResource() {
+        return totalResource;
+    }
+
+    public ResourceProfile getFreeResource() {
+        return freeResource;
+    }
+
+    public static ResourceOverview empty() {
+        return EMPTY_RESOURCE_OVERVIEW;
+    }
 }

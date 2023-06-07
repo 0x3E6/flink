@@ -19,56 +19,54 @@
 package org.apache.flink.connectors.hive;
 
 import org.apache.flink.annotation.VisibleForTesting;
-import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.typeutils.TypeSerializer;
+import org.apache.flink.api.common.typeutils.base.LongSerializer;
+import org.apache.flink.api.common.typeutils.base.StringSerializer;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.configuration.IllegalConfigurationException;
 import org.apache.flink.configuration.ReadableConfig;
-import org.apache.flink.connectors.hive.read.HiveContinuousMonitoringFunction;
-import org.apache.flink.connectors.hive.read.HiveTableFileInputFormat;
-import org.apache.flink.connectors.hive.read.HiveTableInputFormat;
-import org.apache.flink.connectors.hive.read.TimestampedHiveInputSplit;
+import org.apache.flink.connector.file.src.FileSourceSplit;
+import org.apache.flink.connector.file.src.reader.BulkFormat;
+import org.apache.flink.connector.file.table.ContinuousPartitionFetcher;
+import org.apache.flink.connector.file.table.DefaultPartTimeExtractor;
+import org.apache.flink.connector.file.table.FileSystemConnectorOptions;
+import org.apache.flink.connectors.hive.read.HiveContinuousPartitionContext;
+import org.apache.flink.connectors.hive.read.HivePartitionFetcherContextBase;
+import org.apache.flink.connectors.hive.read.HiveSourceSplit;
+import org.apache.flink.connectors.hive.util.HivePartitionUtils;
+import org.apache.flink.core.fs.Path;
+import org.apache.flink.formats.parquet.utils.ParquetFormatStatisticsReportUtil;
+import org.apache.flink.orc.util.OrcFormatStatisticsReportUtil;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
-import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.source.ContinuousFileMonitoringFunction;
-import org.apache.flink.streaming.api.functions.source.ContinuousFileReaderOperatorFactory;
-import org.apache.flink.streaming.api.functions.source.FileProcessingMode;
-import org.apache.flink.streaming.api.functions.source.TimestampedFileInputSplit;
-import org.apache.flink.table.api.TableSchema;
-import org.apache.flink.table.api.config.ExecutionConfigOptions;
-import org.apache.flink.table.catalog.CatalogTable;
+import org.apache.flink.table.api.TableException;
+import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ObjectPath;
-import org.apache.flink.table.catalog.hive.client.HiveMetastoreClientFactory;
-import org.apache.flink.table.catalog.hive.client.HiveMetastoreClientWrapper;
+import org.apache.flink.table.catalog.ResolvedCatalogTable;
 import org.apache.flink.table.catalog.hive.client.HiveShim;
 import org.apache.flink.table.catalog.hive.client.HiveShimLoader;
-import org.apache.flink.table.catalog.hive.descriptors.HiveCatalogValidator;
-import org.apache.flink.table.catalog.hive.util.HiveReflectionUtils;
+import org.apache.flink.table.catalog.hive.factories.HiveCatalogFactoryOptions;
+import org.apache.flink.table.connector.ChangelogMode;
+import org.apache.flink.table.connector.ProviderContext;
+import org.apache.flink.table.connector.format.FileBasedStatisticsReportableInputFormat;
+import org.apache.flink.table.connector.source.DataStreamScanProvider;
+import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.connector.source.ScanTableSource;
+import org.apache.flink.table.connector.source.abilities.SupportsDynamicFiltering;
+import org.apache.flink.table.connector.source.abilities.SupportsLimitPushDown;
+import org.apache.flink.table.connector.source.abilities.SupportsPartitionPushDown;
+import org.apache.flink.table.connector.source.abilities.SupportsProjectionPushDown;
+import org.apache.flink.table.connector.source.abilities.SupportsStatisticReport;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.TimestampData;
-import org.apache.flink.table.filesystem.FileSystemLookupFunction;
-import org.apache.flink.table.filesystem.FileSystemOptions;
-import org.apache.flink.table.functions.AsyncTableFunction;
-import org.apache.flink.table.functions.TableFunction;
-import org.apache.flink.table.functions.hive.conversion.HiveInspectors;
-import org.apache.flink.table.runtime.types.TypeInfoDataTypeConverter;
-import org.apache.flink.table.sources.LimitableTableSource;
-import org.apache.flink.table.sources.LookupableTableSource;
-import org.apache.flink.table.sources.PartitionableTableSource;
-import org.apache.flink.table.sources.ProjectableTableSource;
-import org.apache.flink.table.sources.StreamTableSource;
-import org.apache.flink.table.sources.TableSource;
+import org.apache.flink.table.plan.stats.TableStats;
 import org.apache.flink.table.types.DataType;
-import org.apache.flink.table.types.logical.LogicalTypeRoot;
-import org.apache.flink.table.utils.TableConnectorUtils;
+import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.util.Preconditions;
-import org.apache.flink.util.TimeUtils;
 
-import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.Partition;
-import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
-import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.thrift.TException;
 import org.slf4j.Logger;
@@ -76,484 +74,430 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
-import java.io.IOException;
-import java.sql.Date;
-import java.sql.Timestamp;
-import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
-import static org.apache.flink.table.filesystem.DefaultPartTimeExtractor.toLocalDateTime;
-import static org.apache.flink.table.filesystem.FileSystemOptions.PARTITION_TIME_EXTRACTOR_CLASS;
-import static org.apache.flink.table.filesystem.FileSystemOptions.PARTITION_TIME_EXTRACTOR_KIND;
-import static org.apache.flink.table.filesystem.FileSystemOptions.PARTITION_TIME_EXTRACTOR_TIMESTAMP_PATTERN;
-import static org.apache.flink.table.filesystem.FileSystemOptions.STREAMING_SOURCE_CONSUME_ORDER;
-import static org.apache.flink.table.filesystem.FileSystemOptions.STREAMING_SOURCE_CONSUME_START_OFFSET;
-import static org.apache.flink.table.filesystem.FileSystemOptions.STREAMING_SOURCE_ENABLE;
-import static org.apache.flink.table.filesystem.FileSystemOptions.STREAMING_SOURCE_MONITOR_INTERVAL;
+import static org.apache.flink.connector.file.table.FileSystemConnectorOptions.PARTITION_TIME_EXTRACTOR_TIMESTAMP_FORMATTER;
+import static org.apache.flink.connectors.hive.HiveOptions.STREAMING_SOURCE_CONSUME_START_OFFSET;
+import static org.apache.flink.connectors.hive.HiveOptions.STREAMING_SOURCE_ENABLE;
+import static org.apache.flink.connectors.hive.util.HivePartitionUtils.getAllPartitions;
 
-/**
- * A TableSource implementation to read data from Hive tables.
- */
-public class HiveTableSource implements
-		StreamTableSource<RowData>,
-		PartitionableTableSource,
-		ProjectableTableSource<RowData>,
-		LimitableTableSource<RowData>,
-		LookupableTableSource<RowData> {
+/** A TableSource implementation to read data from Hive tables. */
+public class HiveTableSource
+        implements ScanTableSource,
+                SupportsPartitionPushDown,
+                SupportsProjectionPushDown,
+                SupportsLimitPushDown,
+                SupportsStatisticReport,
+                SupportsDynamicFiltering {
 
-	private static final Logger LOG = LoggerFactory.getLogger(HiveTableSource.class);
+    private static final Logger LOG = LoggerFactory.getLogger(HiveTableSource.class);
+    private static final String HIVE_TRANSFORMATION = "hive";
 
-	private final JobConf jobConf;
-	private final ReadableConfig flinkConf;
-	private final ObjectPath tablePath;
-	private final CatalogTable catalogTable;
-	// Remaining partition specs after partition pruning is performed. Null if pruning is not pushed down.
-	@Nullable
-	private List<Map<String, String>> remainingPartitions = null;
-	private String hiveVersion;
-	private HiveShim hiveShim;
-	private boolean partitionPruned;
-	private int[] projectedFields;
-	private boolean isLimitPushDown = false;
-	private long limit = -1L;
-	private Duration hiveTableCacheTTL;
+    protected final JobConf jobConf;
+    protected final ReadableConfig flinkConf;
+    protected final ObjectPath tablePath;
+    protected final ResolvedCatalogTable catalogTable;
+    protected final String hiveVersion;
+    protected final HiveShim hiveShim;
 
-	public HiveTableSource(
-			JobConf jobConf, ReadableConfig flinkConf, ObjectPath tablePath, CatalogTable catalogTable) {
-		this.jobConf = Preconditions.checkNotNull(jobConf);
-		this.flinkConf = Preconditions.checkNotNull(flinkConf);
-		this.tablePath = Preconditions.checkNotNull(tablePath);
-		this.catalogTable = Preconditions.checkNotNull(catalogTable);
-		this.hiveVersion = Preconditions.checkNotNull(jobConf.get(HiveCatalogValidator.CATALOG_HIVE_VERSION),
-				"Hive version is not defined");
-		hiveShim = HiveShimLoader.loadHiveShim(hiveVersion);
-		partitionPruned = false;
-	}
+    // Remaining partition specs after partition pruning is performed. Null if pruning is not pushed
+    // down.
+    @Nullable protected List<Map<String, String>> remainingPartitions = null;
+    @Nullable protected List<String> dynamicFilterPartitionKeys = null;
+    protected int[] projectedFields;
+    protected DataType producedDataType;
+    protected Long limit = null;
 
-	// A constructor mainly used to create copies during optimizations like partition pruning and projection push down.
-	private HiveTableSource(
-			JobConf jobConf,
-			ReadableConfig flinkConf,
-			ObjectPath tablePath,
-			CatalogTable catalogTable,
-			List<Map<String, String>> remainingPartitions,
-			String hiveVersion,
-			boolean partitionPruned,
-			int[] projectedFields,
-			boolean isLimitPushDown,
-			long limit) {
-		this.jobConf = Preconditions.checkNotNull(jobConf);
-		this.flinkConf = Preconditions.checkNotNull(flinkConf);
-		this.tablePath = Preconditions.checkNotNull(tablePath);
-		this.catalogTable = Preconditions.checkNotNull(catalogTable);
-		this.remainingPartitions = remainingPartitions;
-		this.hiveVersion = hiveVersion;
-		hiveShim = HiveShimLoader.loadHiveShim(hiveVersion);
-		this.partitionPruned = partitionPruned;
-		this.projectedFields = projectedFields;
-		this.isLimitPushDown = isLimitPushDown;
-		this.limit = limit;
-	}
+    public HiveTableSource(
+            JobConf jobConf,
+            ReadableConfig flinkConf,
+            ObjectPath tablePath,
+            ResolvedCatalogTable catalogTable) {
+        this.jobConf = Preconditions.checkNotNull(jobConf);
+        this.flinkConf = Preconditions.checkNotNull(flinkConf);
+        this.tablePath = Preconditions.checkNotNull(tablePath);
+        this.catalogTable = Preconditions.checkNotNull(catalogTable);
+        this.hiveVersion =
+                Preconditions.checkNotNull(
+                        jobConf.get(HiveCatalogFactoryOptions.HIVE_VERSION.key()),
+                        "Hive version is not defined");
+        this.hiveShim = HiveShimLoader.loadHiveShim(hiveVersion);
+        this.producedDataType = catalogTable.getResolvedSchema().toPhysicalRowDataType();
+    }
 
-	@Override
-	public boolean isBounded() {
-		return !isStreamingSource();
-	}
+    @Override
+    public ScanRuntimeProvider getScanRuntimeProvider(ScanContext runtimeProviderContext) {
+        return new DataStreamScanProvider() {
+            @Override
+            public DataStream<RowData> produceDataStream(
+                    ProviderContext providerContext, StreamExecutionEnvironment execEnv) {
+                return getDataStream(providerContext, execEnv);
+            }
 
-	@Override
-	public DataStream<RowData> getDataStream(StreamExecutionEnvironment execEnv) {
-		List<HiveTablePartition> allHivePartitions = initAllPartitions();
+            @Override
+            public boolean isBounded() {
+                return !isStreamingSource();
+            }
+        };
+    }
 
-		@SuppressWarnings("unchecked")
-		TypeInformation<RowData> typeInfo =
-				(TypeInformation<RowData>) TypeInfoDataTypeConverter.fromDataTypeToTypeInfo(getProducedDataType());
+    @VisibleForTesting
+    protected DataStream<RowData> getDataStream(
+            ProviderContext providerContext, StreamExecutionEnvironment execEnv) {
+        HiveSourceBuilder sourceBuilder =
+                new HiveSourceBuilder(jobConf, flinkConf, tablePath, hiveVersion, catalogTable)
+                        .setProjectedFields(projectedFields)
+                        .setLimit(limit);
 
-		HiveTableInputFormat inputFormat = getInputFormat(
-				allHivePartitions,
-				flinkConf.get(HiveOptions.TABLE_EXEC_HIVE_FALLBACK_MAPRED_READER));
+        if (isStreamingSource()) {
+            DataStreamSource<RowData> sourceStream =
+                    toDataStreamSource(execEnv, sourceBuilder.buildWithDefaultBulkFormat());
+            providerContext.generateUid(HIVE_TRANSFORMATION).ifPresent(sourceStream::uid);
+            return sourceStream;
+        } else {
+            List<HiveTablePartition> hivePartitionsToRead =
+                    getAllPartitions(
+                            jobConf,
+                            hiveVersion,
+                            tablePath,
+                            catalogTable.getPartitionKeys(),
+                            remainingPartitions);
 
-		if (isStreamingSource()) {
-			if (catalogTable.getPartitionKeys().isEmpty()) {
-				return createStreamSourceForNonPartitionTable(execEnv, typeInfo, inputFormat, allHivePartitions.get(0));
-			} else {
-				return createStreamSourceForPartitionTable(execEnv, typeInfo, inputFormat);
-			}
-		} else {
-			return createBatchSource(execEnv, typeInfo, inputFormat);
-		}
-	}
+            int parallelism =
+                    new HiveParallelismInference(tablePath, flinkConf)
+                            .infer(
+                                    () ->
+                                            HiveSourceFileEnumerator.getNumFiles(
+                                                    hivePartitionsToRead, jobConf),
+                                    () ->
+                                            HiveSourceFileEnumerator.createInputSplits(
+                                                            0, hivePartitionsToRead, jobConf, true)
+                                                    .size())
+                            .limit(limit);
+            return toDataStreamSource(
+                            execEnv,
+                            sourceBuilder
+                                    .setPartitions(hivePartitionsToRead)
+                                    .setDynamicFilterPartitionKeys(dynamicFilterPartitionKeys)
+                                    .buildWithDefaultBulkFormat())
+                    .setParallelism(parallelism);
+        }
+    }
 
-	private boolean isStreamingSource() {
-		return Boolean.parseBoolean(catalogTable.getOptions().getOrDefault(
-				STREAMING_SOURCE_ENABLE.key(),
-				STREAMING_SOURCE_ENABLE.defaultValue().toString()));
-	}
+    private DataStreamSource<RowData> toDataStreamSource(
+            StreamExecutionEnvironment execEnv, HiveSource<RowData> hiveSource) {
+        return execEnv.fromSource(
+                hiveSource,
+                WatermarkStrategy.noWatermarks(),
+                "HiveSource-" + tablePath.getFullName());
+    }
 
-	private DataStream<RowData> createBatchSource(StreamExecutionEnvironment execEnv,
-			TypeInformation<RowData> typeInfo, HiveTableInputFormat inputFormat) {
-		DataStreamSource<RowData> source = execEnv.createInput(inputFormat, typeInfo);
+    protected boolean isStreamingSource() {
+        return Boolean.parseBoolean(
+                catalogTable
+                        .getOptions()
+                        .getOrDefault(
+                                STREAMING_SOURCE_ENABLE.key(),
+                                STREAMING_SOURCE_ENABLE.defaultValue().toString()));
+    }
 
-		int parallelism = flinkConf.get(ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM);
-		if (flinkConf.get(HiveOptions.TABLE_EXEC_HIVE_INFER_SOURCE_PARALLELISM)) {
-			int max = flinkConf.get(HiveOptions.TABLE_EXEC_HIVE_INFER_SOURCE_PARALLELISM_MAX);
-			if (max < 1) {
-				throw new IllegalConfigurationException(
-						HiveOptions.TABLE_EXEC_HIVE_INFER_SOURCE_PARALLELISM_MAX.key() +
-								" cannot be less than 1");
-			}
+    @Override
+    public void applyLimit(long limit) {
+        this.limit = limit;
+    }
 
-			int splitNum;
-			try {
-				long nano1 = System.nanoTime();
-				splitNum = inputFormat.createInputSplits(0).length;
-				long nano2 = System.nanoTime();
-				LOG.info(
-						"Hive source({}}) createInputSplits use time: {} ms",
-						tablePath,
-						(nano2 - nano1) / 1_000_000);
-			} catch (IOException e) {
-				throw new FlinkHiveException(e);
-			}
-			parallelism = Math.min(splitNum, max);
-		}
-		parallelism = limit > 0 ? Math.min(parallelism, (int) limit / 1000) : parallelism;
-		parallelism = Math.max(1, parallelism);
-		source.setParallelism(parallelism);
-		return source.name(explainSource());
-	}
+    @Override
+    public Optional<List<Map<String, String>>> listPartitions() {
+        return Optional.empty();
+    }
 
-	private DataStream<RowData> createStreamSourceForPartitionTable(
-			StreamExecutionEnvironment execEnv,
-			TypeInformation<RowData> typeInfo,
-			HiveTableInputFormat inputFormat) {
-		Configuration configuration = new Configuration();
-		catalogTable.getOptions().forEach(configuration::setString);
+    @Override
+    public void applyPartitions(List<Map<String, String>> remainingPartitions) {
+        if (catalogTable.getPartitionKeys() != null
+                && catalogTable.getPartitionKeys().size() != 0) {
+            this.remainingPartitions = remainingPartitions;
+        } else {
+            throw new UnsupportedOperationException(
+                    "Should not apply partitions to a non-partitioned table.");
+        }
+    }
 
-		String consumeOrderStr = configuration.get(STREAMING_SOURCE_CONSUME_ORDER);
-		ConsumeOrder consumeOrder = ConsumeOrder.getConsumeOrder(consumeOrderStr);
-		String consumeOffset = configuration.get(STREAMING_SOURCE_CONSUME_START_OFFSET);
-		String extractorKind = configuration.get(PARTITION_TIME_EXTRACTOR_KIND);
-		String extractorClass = configuration.get(PARTITION_TIME_EXTRACTOR_CLASS);
-		String extractorPattern = configuration.get(PARTITION_TIME_EXTRACTOR_TIMESTAMP_PATTERN);
-		Duration monitorInterval = configuration.get(STREAMING_SOURCE_MONITOR_INTERVAL);
+    @Override
+    public List<String> listAcceptedFilterFields() {
+        List<String> acceptedFilterFields = new ArrayList<>();
+        for (String partitionKey : catalogTable.getPartitionKeys()) {
+            // Only partition keys with supported types can be returned as accepted filter fields.
+            if (HiveSourceDynamicFileEnumerator.SUPPORTED_TYPES.contains(
+                    catalogTable
+                            .getResolvedSchema()
+                            .getColumn(partitionKey)
+                            .map(Column::getDataType)
+                            .map(DataType::getLogicalType)
+                            .map(LogicalType::getTypeRoot)
+                            .orElse(null))) {
+                acceptedFilterFields.add(partitionKey);
+            }
+        }
 
-		HiveContinuousMonitoringFunction monitoringFunction = new HiveContinuousMonitoringFunction(
-				hiveShim,
-				jobConf,
-				tablePath,
-				catalogTable,
-				execEnv.getParallelism(),
-				consumeOrder,
-				consumeOffset,
-				extractorKind,
-				extractorClass,
-				extractorPattern,
-				monitorInterval.toMillis());
+        return acceptedFilterFields;
+    }
 
-		ContinuousFileReaderOperatorFactory<RowData, TimestampedHiveInputSplit> factory =
-				new ContinuousFileReaderOperatorFactory<>(inputFormat);
+    @Override
+    public void applyDynamicFiltering(List<String> candidateFilterFields) {
+        if (catalogTable.isPartitioned()) {
+            dynamicFilterPartitionKeys = candidateFilterFields;
+        } else {
+            throw new TableException(
+                    String.format(
+                            "Hive source table : %s is not a partition table, but try to apply dynamic filtering.",
+                            catalogTable));
+        }
+    }
 
-		String sourceName = "HiveMonitoringFunction";
-		SingleOutputStreamOperator<RowData> source = execEnv
-				.addSource(monitoringFunction, sourceName)
-				.transform("Split Reader: " + sourceName, typeInfo, factory);
+    @Override
+    public boolean supportsNestedProjection() {
+        return false;
+    }
 
-		return new DataStreamSource<>(source);
-	}
+    @Override
+    public void applyProjection(int[][] projectedFields, DataType producedDataType) {
+        this.projectedFields = Arrays.stream(projectedFields).mapToInt(value -> value[0]).toArray();
+        this.producedDataType = producedDataType;
+    }
 
-	private DataStream<RowData> createStreamSourceForNonPartitionTable(
-			StreamExecutionEnvironment execEnv,
-			TypeInformation<RowData> typeInfo,
-			HiveTableInputFormat inputFormat,
-			HiveTablePartition hiveTable) {
-		HiveTableFileInputFormat fileInputFormat = new HiveTableFileInputFormat(inputFormat, hiveTable);
+    @Override
+    public String asSummaryString() {
+        return "HiveSource";
+    }
 
-		Configuration configuration = new Configuration();
-		catalogTable.getOptions().forEach(configuration::setString);
-		String consumeOrderStr = configuration.get(STREAMING_SOURCE_CONSUME_ORDER);
-		ConsumeOrder consumeOrder = ConsumeOrder.getConsumeOrder(consumeOrderStr);
-		if (consumeOrder != ConsumeOrder.CREATE_TIME_ORDER) {
-			throw new UnsupportedOperationException(
-					"Only " + ConsumeOrder.CREATE_TIME_ORDER + " is supported for non partition table.");
-		}
+    @Override
+    public ChangelogMode getChangelogMode() {
+        return ChangelogMode.insertOnly();
+    }
 
-		String consumeOffset = configuration.get(STREAMING_SOURCE_CONSUME_START_OFFSET);
-		// to Local zone mills instead of UTC mills
-		long currentReadTime = TimestampData.fromLocalDateTime(toLocalDateTime(consumeOffset))
-				.toTimestamp().getTime();
+    @Override
+    public DynamicTableSource copy() {
+        HiveTableSource source = new HiveTableSource(jobConf, flinkConf, tablePath, catalogTable);
+        source.remainingPartitions = remainingPartitions;
+        source.projectedFields = projectedFields;
+        source.producedDataType = producedDataType;
+        source.limit = limit;
+        source.dynamicFilterPartitionKeys = dynamicFilterPartitionKeys;
+        return source;
+    }
 
-		Duration monitorInterval = configuration.get(STREAMING_SOURCE_MONITOR_INTERVAL);
+    @Override
+    public TableStats reportStatistics() {
+        try {
+            // only support BOUNDED source
+            if (isStreamingSource()) {
+                return TableStats.UNKNOWN;
+            }
+            if (flinkConf.get(FileSystemConnectorOptions.SOURCE_REPORT_STATISTICS)
+                    != FileSystemConnectorOptions.FileStatisticsType.ALL) {
+                return TableStats.UNKNOWN;
+            }
 
-		ContinuousFileMonitoringFunction<RowData> monitoringFunction =
-				new ContinuousFileMonitoringFunction<>(
-						fileInputFormat,
-						FileProcessingMode.PROCESS_CONTINUOUSLY,
-						execEnv.getParallelism(),
-						monitorInterval.toMillis(),
-						currentReadTime);
+            HiveSourceBuilder sourceBuilder =
+                    new HiveSourceBuilder(jobConf, flinkConf, tablePath, hiveVersion, catalogTable)
+                            .setProjectedFields(projectedFields);
+            List<HiveTablePartition> hivePartitionsToRead =
+                    getAllPartitions(
+                            jobConf,
+                            hiveVersion,
+                            tablePath,
+                            catalogTable.getPartitionKeys(),
+                            remainingPartitions);
+            BulkFormat<RowData, HiveSourceSplit> defaultBulkFormat =
+                    sourceBuilder.createDefaultBulkFormat();
+            List<HiveSourceSplit> inputSplits =
+                    HiveSourceFileEnumerator.createInputSplits(
+                            1, hivePartitionsToRead, jobConf, false);
+            if (inputSplits.size() != 0) {
+                TableStats tableStats;
+                if (defaultBulkFormat instanceof FileBasedStatisticsReportableInputFormat) {
+                    // If HiveInputFormat's variable useMapRedReader is false, Flink will use hadoop
+                    // mapRed record to read data.
+                    tableStats =
+                            ((FileBasedStatisticsReportableInputFormat) defaultBulkFormat)
+                                    .reportStatistics(
+                                            inputSplits.stream()
+                                                    .map(FileSourceSplit::path)
+                                                    .collect(Collectors.toList()),
+                                            catalogTable
+                                                    .getResolvedSchema()
+                                                    .toPhysicalRowDataType());
+                } else {
+                    // If HiveInputFormat's variable useMapRedReader is true, Hive using MapRed
+                    // InputFormat to read data.
+                    tableStats =
+                            getMapRedInputFormatStatistics(
+                                    inputSplits,
+                                    catalogTable.getResolvedSchema().toPhysicalRowDataType());
+                }
+                if (limit == null) {
+                    // If no limit push down, return recompute table stats.
+                    return tableStats;
+                } else {
+                    // If table have limit push down, return new table stats without table column
+                    // stats.
+                    long newRowCount = Math.min(limit, tableStats.getRowCount());
+                    return new TableStats(newRowCount);
+                }
+            } else {
+                return new TableStats(0);
+            }
 
-		ContinuousFileReaderOperatorFactory<RowData, TimestampedFileInputSplit> factory =
-				new ContinuousFileReaderOperatorFactory<>(fileInputFormat);
+        } catch (Exception e) {
+            LOG.warn("Reporting statistics failed for hive table source: {}", e.getMessage());
+            return TableStats.UNKNOWN;
+        }
+    }
 
-		String sourceName = "HiveFileMonitoringFunction";
-		SingleOutputStreamOperator<RowData> source = execEnv.addSource(monitoringFunction, sourceName)
-				.transform("Split Reader: " + sourceName, typeInfo, factory);
+    private TableStats getMapRedInputFormatStatistics(
+            List<HiveSourceSplit> inputSplits, DataType producedDataType) {
+        // TODO now we assume that one hive external table has only one storage file format
+        String serializationLib =
+                inputSplits
+                        .get(0)
+                        .getHiveTablePartition()
+                        .getStorageDescriptor()
+                        .getSerdeInfo()
+                        .getSerializationLib()
+                        .toLowerCase();
+        List<Path> files =
+                inputSplits.stream().map(FileSourceSplit::path).collect(Collectors.toList());
+        // Now we only support Parquet, Orc formats.
+        if (serializationLib.contains("parquet")) {
+            return ParquetFormatStatisticsReportUtil.getTableStatistics(
+                    files, producedDataType, jobConf, hiveVersion.startsWith("3"));
+        } else if (serializationLib.contains("orc")) {
+            return OrcFormatStatisticsReportUtil.getTableStatistics(
+                    files, producedDataType, jobConf);
+        } else {
+            // Now, only support Orc and Parquet Formats.
+            LOG.info(
+                    "Now for hive table source, reporting statistics only support Orc and Parquet formats.");
+            return TableStats.UNKNOWN;
+        }
+    }
 
-		return new DataStreamSource<>(source);
-	}
+    /** PartitionFetcher.Context for {@link ContinuousPartitionFetcher}. */
+    @SuppressWarnings("unchecked")
+    public static class HiveContinuousPartitionFetcherContext<T extends Comparable<T>>
+            extends HivePartitionFetcherContextBase<Partition>
+            implements HiveContinuousPartitionContext<Partition, T> {
 
-	@VisibleForTesting
-	HiveTableInputFormat getInputFormat(List<HiveTablePartition> allHivePartitions, boolean useMapRedReader) {
-		return new HiveTableInputFormat(
-				jobConf,
-				catalogTable,
-				allHivePartitions,
-				projectedFields,
-				limit,
-				hiveVersion,
-				useMapRedReader);
-	}
+        private static final long serialVersionUID = 1L;
+        private static final Long DEFAULT_MIN_TIME_OFFSET = 0L;
+        private static final String DEFAULT_MIN_NAME_OFFSET = "";
 
-	@Override
-	public TableSchema getTableSchema() {
-		return catalogTable.getSchema();
-	}
+        private final TypeSerializer<T> typeSerializer;
+        private final T consumeStartOffset;
 
-	@Override
-	public DataType getProducedDataType() {
-		return getProducedTableSchema().toRowDataType().bridgedTo(RowData.class);
-	}
+        public HiveContinuousPartitionFetcherContext(
+                ObjectPath tablePath,
+                HiveShim hiveShim,
+                JobConfWrapper confWrapper,
+                List<String> partitionKeys,
+                Configuration configuration,
+                String defaultPartitionName) {
+            super(
+                    tablePath,
+                    hiveShim,
+                    confWrapper,
+                    partitionKeys,
+                    configuration,
+                    defaultPartitionName);
 
-	private TableSchema getProducedTableSchema() {
-		TableSchema fullSchema = getTableSchema();
-		if (projectedFields == null) {
-			return fullSchema;
-		} else {
-			String[] fullNames = fullSchema.getFieldNames();
-			DataType[] fullTypes = fullSchema.getFieldDataTypes();
-			return TableSchema.builder().fields(
-					Arrays.stream(projectedFields).mapToObj(i -> fullNames[i]).toArray(String[]::new),
-					Arrays.stream(projectedFields).mapToObj(i -> fullTypes[i]).toArray(DataType[]::new)).build();
-		}
-	}
+            switch (partitionOrder) {
+                case PARTITION_NAME:
+                    if (configuration.contains(STREAMING_SOURCE_CONSUME_START_OFFSET)) {
+                        String consumeOffsetStr =
+                                configuration.getString(STREAMING_SOURCE_CONSUME_START_OFFSET);
+                        consumeStartOffset = (T) consumeOffsetStr;
+                    } else {
+                        consumeStartOffset = (T) DEFAULT_MIN_NAME_OFFSET;
+                    }
+                    typeSerializer = (TypeSerializer<T>) StringSerializer.INSTANCE;
+                    break;
+                case PARTITION_TIME:
+                case CREATE_TIME:
+                    if (configuration.contains(STREAMING_SOURCE_CONSUME_START_OFFSET)) {
+                        String consumeOffsetStr =
+                                configuration.getString(STREAMING_SOURCE_CONSUME_START_OFFSET);
 
-	@Override
-	public boolean isLimitPushedDown() {
-		return isLimitPushDown;
-	}
+                        LocalDateTime localDateTime =
+                                DefaultPartTimeExtractor.toLocalDateTime(
+                                        consumeOffsetStr,
+                                        configuration.getString(
+                                                PARTITION_TIME_EXTRACTOR_TIMESTAMP_FORMATTER));
 
-	@Override
-	public TableSource<RowData> applyLimit(long limit) {
-		return new HiveTableSource(
-				jobConf,
-				flinkConf,
-				tablePath,
-				catalogTable,
-				remainingPartitions,
-				hiveVersion,
-				partitionPruned,
-				projectedFields,
-				true,
-				limit);
-	}
+                        consumeStartOffset =
+                                (T)
+                                        Long.valueOf(
+                                                TimestampData.fromLocalDateTime(localDateTime)
+                                                        .getMillisecond());
+                    } else {
+                        consumeStartOffset = (T) DEFAULT_MIN_TIME_OFFSET;
+                    }
+                    typeSerializer = (TypeSerializer<T>) LongSerializer.INSTANCE;
+                    break;
+                default:
+                    throw new UnsupportedOperationException(
+                            "Unsupported partition order: " + partitionOrder);
+            }
+        }
 
-	@Override
-	public List<Map<String, String>> getPartitions() {
-		throw new UnsupportedOperationException(
-				"Please use Catalog API to retrieve all partitions of a table");
-	}
+        @Override
+        public Optional<Partition> getPartition(List<String> partValues) throws TException {
+            try {
+                return Optional.of(
+                        metaStoreClient.getPartition(
+                                tablePath.getDatabaseName(),
+                                tablePath.getObjectName(),
+                                partValues));
+            } catch (NoSuchObjectException e) {
+                return Optional.empty();
+            }
+        }
 
-	@Override
-	public TableSource<RowData> applyPartitionPruning(List<Map<String, String>> remainingPartitions) {
-		if (catalogTable.getPartitionKeys() == null || catalogTable.getPartitionKeys().size() == 0) {
-			return this;
-		} else {
-			return new HiveTableSource(
-					jobConf,
-					flinkConf,
-					tablePath,
-					catalogTable,
-					remainingPartitions,
-					hiveVersion,
-					true,
-					projectedFields,
-					isLimitPushDown,
-					limit);
-		}
-	}
+        @Override
+        public ObjectPath getTablePath() {
+            return tablePath;
+        }
 
-	@Override
-	public TableSource<RowData> projectFields(int[] fields) {
-		return new HiveTableSource(
-				jobConf,
-				flinkConf,
-				tablePath,
-				catalogTable,
-				remainingPartitions,
-				hiveVersion,
-				partitionPruned,
-				fields,
-				isLimitPushDown,
-				limit);
-	}
+        /** Convert partition to HiveTablePartition. */
+        public HiveTablePartition toHiveTablePartition(Partition partition) {
+            return HivePartitionUtils.toHiveTablePartition(partitionKeys, tableProps, partition);
+        }
 
-	private List<HiveTablePartition> initAllPartitions() {
-		List<HiveTablePartition> allHivePartitions = new ArrayList<>();
-		// Please note that the following directly accesses Hive metastore, which is only a temporary workaround.
-		// Ideally, we need to go thru Catalog API to get all info we need here, which requires some major
-		// refactoring. We will postpone this until we merge Blink to Flink.
-		try (HiveMetastoreClientWrapper client = HiveMetastoreClientFactory.create(new HiveConf(jobConf, HiveConf.class), hiveVersion)) {
-			String dbName = tablePath.getDatabaseName();
-			String tableName = tablePath.getObjectName();
-			List<String> partitionColNames = catalogTable.getPartitionKeys();
-			Table hiveTable = client.getTable(dbName, tableName);
-			Properties tableProps = HiveReflectionUtils.getTableMetadata(hiveShim, hiveTable);
-			String ttlStr = tableProps.getProperty(FileSystemOptions.LOOKUP_JOIN_CACHE_TTL.key());
-			hiveTableCacheTTL = ttlStr != null ?
-					TimeUtils.parseDuration(ttlStr) :
-					FileSystemOptions.LOOKUP_JOIN_CACHE_TTL.defaultValue();
-			if (partitionColNames != null && partitionColNames.size() > 0) {
-				final String defaultPartitionName = jobConf.get(HiveConf.ConfVars.DEFAULTPARTITIONNAME.varname,
-						HiveConf.ConfVars.DEFAULTPARTITIONNAME.defaultStrVal);
-				List<Partition> partitions = new ArrayList<>();
-				if (remainingPartitions != null) {
-					for (Map<String, String> spec : remainingPartitions) {
-						partitions.add(client.getPartition(dbName, tableName, partitionSpecToValues(spec, partitionColNames)));
-					}
-				} else {
-					partitions.addAll(client.listPartitions(dbName, tableName, (short) -1));
-				}
-				for (Partition partition : partitions) {
-					HiveTablePartition hiveTablePartition = toHiveTablePartition(
-							catalogTable.getPartitionKeys(),
-							catalogTable.getSchema().getFieldNames(),
-							catalogTable.getSchema().getFieldDataTypes(),
-							hiveShim,
-							tableProps,
-							defaultPartitionName,
-							partition);
-					allHivePartitions.add(hiveTablePartition);
-				}
-			} else {
-				allHivePartitions.add(new HiveTablePartition(hiveTable.getSd(), tableProps));
-			}
-		} catch (TException e) {
-			throw new FlinkHiveException("Failed to collect all partitions from hive metaStore", e);
-		}
-		return allHivePartitions;
-	}
+        @Override
+        public TypeSerializer<T> getTypeSerializer() {
+            return typeSerializer;
+        }
 
-	public static HiveTablePartition toHiveTablePartition(
-			List<String> partitionKeys,
-			String[] fieldNames,
-			DataType[] fieldTypes,
-			HiveShim shim,
-			Properties tableProps,
-			String defaultPartitionName,
-			Partition partition) {
-		StorageDescriptor sd = partition.getSd();
-		Map<String, Object> partitionColValues = new HashMap<>();
-		List<String> nameList = Arrays.asList(fieldNames);
-		for (int i = 0; i < partitionKeys.size(); i++) {
-			String partitionColName = partitionKeys.get(i);
-			String partitionValue = partition.getValues().get(i);
-			DataType type = fieldTypes[nameList.indexOf(partitionColName)];
-			Object partitionObject;
-			if (defaultPartitionName.equals(partitionValue)) {
-				LogicalTypeRoot typeRoot = type.getLogicalType().getTypeRoot();
-				// while this is inline with Hive, seems it should be null for string columns as well
-				partitionObject = typeRoot == LogicalTypeRoot.CHAR || typeRoot == LogicalTypeRoot.VARCHAR ? defaultPartitionName : null;
-			} else {
-				partitionObject = restorePartitionValueFromFromType(shim, partitionValue, type);
-			}
-			partitionColValues.put(partitionColName, partitionObject);
-		}
-		return new HiveTablePartition(sd, partitionColValues, tableProps);
-	}
+        @Override
+        public T getConsumeStartOffset() {
+            return consumeStartOffset;
+        }
 
-	private static List<String> partitionSpecToValues(Map<String, String> spec, List<String> partitionColNames) {
-		Preconditions.checkArgument(spec.size() == partitionColNames.size() && spec.keySet().containsAll(partitionColNames),
-				"Partition spec (%s) and partition column names (%s) doesn't match", spec, partitionColNames);
-		return partitionColNames.stream().map(spec::get).collect(Collectors.toList());
-	}
+        @Override
+        public void close() throws Exception {
+            if (this.metaStoreClient != null) {
+                this.metaStoreClient.close();
+            }
+        }
+    }
 
-	private static Object restorePartitionValueFromFromType(HiveShim shim, String valStr, DataType type) {
-		LogicalTypeRoot typeRoot = type.getLogicalType().getTypeRoot();
-		//note: it's not a complete list ofr partition key types that Hive support, we may need add more later.
-		switch (typeRoot) {
-			case CHAR:
-			case VARCHAR:
-				return valStr;
-			case BOOLEAN:
-				return Boolean.parseBoolean(valStr);
-			case TINYINT:
-				return Integer.valueOf(valStr).byteValue();
-			case SMALLINT:
-				return Short.valueOf(valStr);
-			case INTEGER:
-				return Integer.valueOf(valStr);
-			case BIGINT:
-				return Long.valueOf(valStr);
-			case FLOAT:
-				return Float.valueOf(valStr);
-			case DOUBLE:
-				return Double.valueOf(valStr);
-			case DATE:
-				return HiveInspectors.toFlinkObject(
-						HiveInspectors.getObjectInspector(type),
-						shim.toHiveDate(Date.valueOf(valStr)),
-						shim);
-			case TIMESTAMP_WITHOUT_TIME_ZONE:
-				return HiveInspectors.toFlinkObject(
-						HiveInspectors.getObjectInspector(type),
-						shim.toHiveTimestamp(Timestamp.valueOf(valStr)),
-						shim);
-			default:
-				break;
-		}
-		throw new FlinkHiveException(
-				new IllegalArgumentException(String.format("Can not convert %s to type %s for partition value", valStr, type)));
-	}
-
-	@Override
-	public String explainSource() {
-		String explain = String.format(" TablePath: %s, PartitionPruned: %s, PartitionNums: %d",
-				tablePath.getFullName(), partitionPruned, null == remainingPartitions ? null : remainingPartitions.size());
-		if (projectedFields != null) {
-			explain += ", ProjectedFields: " + Arrays.toString(projectedFields);
-		}
-		if (isLimitPushDown) {
-			explain += String.format(", LimitPushDown %s, Limit %d", isLimitPushDown, limit);
-		}
-		return TableConnectorUtils.generateRuntimeName(getClass(), getTableSchema().getFieldNames()) + explain;
-	}
-
-	@Override
-	public TableFunction<RowData> getLookupFunction(String[] lookupKeys) {
-		List<HiveTablePartition> allPartitions = initAllPartitions();
-		TableSchema producedSchema = getProducedTableSchema();
-		return new FileSystemLookupFunction<>(
-				getInputFormat(allPartitions, flinkConf.get(HiveOptions.TABLE_EXEC_HIVE_FALLBACK_MAPRED_READER)),
-				lookupKeys,
-				producedSchema.getFieldNames(),
-				producedSchema.getFieldDataTypes(),
-				hiveTableCacheTTL
-		);
-	}
-
-	@Override
-	public AsyncTableFunction<RowData> getAsyncLookupFunction(String[] lookupKeys) {
-		throw new UnsupportedOperationException("Hive table doesn't support async lookup");
-	}
-
-	@Override
-	public boolean isAsyncEnabled() {
-		return false;
-	}
+    @VisibleForTesting
+    public JobConf getJobConf() {
+        return jobConf;
+    }
 }

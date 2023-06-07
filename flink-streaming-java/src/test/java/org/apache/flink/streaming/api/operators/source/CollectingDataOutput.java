@@ -22,35 +22,41 @@ import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.io.PushingAsyncDataInput;
 import org.apache.flink.streaming.runtime.streamrecord.LatencyMarker;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.streaming.runtime.streamstatus.StreamStatus;
+import org.apache.flink.streaming.runtime.watermarkstatus.WatermarkStatus;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * A test utility implementation of {@link PushingAsyncDataInput.DataOutput} that collects all events.
+ * A test utility implementation of {@link PushingAsyncDataInput.DataOutput} that collects all
+ * events.
  */
-final class CollectingDataOutput<E> implements PushingAsyncDataInput.DataOutput<E> {
+public final class CollectingDataOutput<E> implements PushingAsyncDataInput.DataOutput<E> {
 
-	final List<Object> events = new ArrayList<>();
+    final List<Object> events = new ArrayList<>();
 
-	@Override
-	public void emitWatermark(Watermark watermark) throws Exception {
-		events.add(watermark);
-	}
+    @Override
+    public void emitWatermark(Watermark watermark) throws Exception {
+        events.add(watermark);
+    }
 
-	@Override
-	public void emitStreamStatus(StreamStatus streamStatus) throws Exception {
-		events.add(streamStatus);
-	}
+    @Override
+    public void emitWatermarkStatus(WatermarkStatus watermarkStatus) throws Exception {
+        events.add(watermarkStatus);
+    }
 
-	@Override
-	public void emitRecord(StreamRecord<E> streamRecord) throws Exception {
-		events.add(streamRecord);
-	}
+    @Override
+    public void emitRecord(StreamRecord<E> streamRecord) throws Exception {
+        // Bypass issues with object re-use disabled by copying the record
+        events.add(streamRecord.copy(streamRecord.getValue()));
+    }
 
-	@Override
-	public void emitLatencyMarker(LatencyMarker latencyMarker) throws Exception {
-		events.add(latencyMarker);
-	}
+    @Override
+    public void emitLatencyMarker(LatencyMarker latencyMarker) throws Exception {
+        events.add(latencyMarker);
+    }
+
+    public List<Object> getEvents() {
+        return events;
+    }
 }

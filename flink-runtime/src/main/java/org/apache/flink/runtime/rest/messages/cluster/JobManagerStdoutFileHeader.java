@@ -21,40 +21,39 @@ package org.apache.flink.runtime.rest.messages.cluster;
 import org.apache.flink.runtime.rest.HttpMethodWrapper;
 import org.apache.flink.runtime.rest.messages.EmptyMessageParameters;
 import org.apache.flink.runtime.rest.messages.EmptyRequestBody;
-import org.apache.flink.runtime.rest.messages.UntypedResponseMessageHeaders;
+import org.apache.flink.runtime.rest.messages.RuntimeUntypedResponseMessageHeaders;
 
-/**
- * Headers for the {@link JobManagerStdoutFileHandler}.
- */
-public class JobManagerStdoutFileHeader implements UntypedResponseMessageHeaders<EmptyRequestBody, EmptyMessageParameters> {
+/** Headers for the {@link JobManagerStdoutFileHandler}. */
+public class JobManagerStdoutFileHeader
+        implements RuntimeUntypedResponseMessageHeaders<EmptyRequestBody, EmptyMessageParameters> {
 
-	private static final JobManagerStdoutFileHeader INSTANCE = new JobManagerStdoutFileHeader();
+    private static final JobManagerStdoutFileHeader INSTANCE = new JobManagerStdoutFileHeader();
 
-	private static final String URL = "/jobmanager/stdout";
+    private static final String URL = "/jobmanager/stdout";
 
-	private JobManagerStdoutFileHeader() {}
+    private JobManagerStdoutFileHeader() {}
 
-	@Override
-	public Class<EmptyRequestBody> getRequestClass() {
-		return EmptyRequestBody.class;
-	}
+    @Override
+    public Class<EmptyRequestBody> getRequestClass() {
+        return EmptyRequestBody.class;
+    }
 
-	@Override
-	public EmptyMessageParameters getUnresolvedMessageParameters() {
-		return EmptyMessageParameters.getInstance();
-	}
+    @Override
+    public EmptyMessageParameters getUnresolvedMessageParameters() {
+        return EmptyMessageParameters.getInstance();
+    }
 
-	@Override
-	public HttpMethodWrapper getHttpMethod() {
-		return HttpMethodWrapper.GET;
-	}
+    @Override
+    public HttpMethodWrapper getHttpMethod() {
+        return HttpMethodWrapper.GET;
+    }
 
-	@Override
-	public String getTargetRestEndpointURL() {
-		return URL;
-	}
+    @Override
+    public String getTargetRestEndpointURL() {
+        return URL;
+    }
 
-	public static JobManagerStdoutFileHeader getInstance() {
-		return INSTANCE;
-	}
+    public static JobManagerStdoutFileHeader getInstance() {
+        return INSTANCE;
+    }
 }

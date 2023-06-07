@@ -19,47 +19,46 @@ package org.apache.flink.metrics.datadog;
 
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.SimpleCounter;
-import org.apache.flink.util.TestLogger;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
 
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Tests for the {@link DCounter}.
- */
-public class DCounterTest extends TestLogger {
+/** Tests for the {@link DCounter}. */
+class DCounterTest {
 
-	@Test
-	public void testGetMetricValue() {
-		final Counter backingCounter = new SimpleCounter();
-		final DCounter counter = new DCounter(backingCounter, "counter", "localhost", Collections.emptyList(), () -> 0);
+    @Test
+    void testGetMetricValue() {
+        final Counter backingCounter = new SimpleCounter();
+        final DCounter counter =
+                new DCounter(
+                        backingCounter, "counter", "localhost", Collections.emptyList(), () -> 0);
 
-		// sane initial state
-		assertEquals(0L, counter.getMetricValue());
-		counter.ackReport();
-		assertEquals(0L, counter.getMetricValue());
+        // sane initial state
+        assertThat(counter.getMetricValue()).isEqualTo(0L);
+        counter.ackReport();
+        assertThat(counter.getMetricValue()).isEqualTo(0L);
 
-		// value is compared against initial state 0
-		backingCounter.inc(10);
-		assertEquals(10L, counter.getMetricValue());
+        // value is compared against initial state 0
+        backingCounter.inc(10);
+        assertThat(counter.getMetricValue()).isEqualTo(10L);
 
-		// last value was not acked, should still be compared against initial state 0
-		backingCounter.inc(10);
-		assertEquals(20L, counter.getMetricValue());
+        // last value was not acked, should still be compared against initial state 0
+        backingCounter.inc(10);
+        assertThat(counter.getMetricValue()).isEqualTo(20L);
 
-		// last value (20) acked, now target of comparison
-		counter.ackReport();
-		assertEquals(0L, counter.getMetricValue());
+        // last value (20) acked, now target of comparison
+        counter.ackReport();
+        assertThat(counter.getMetricValue()).isEqualTo(0L);
 
-		// we now compare against the acked value
-		backingCounter.inc(10);
-		assertEquals(10L, counter.getMetricValue());
+        // we now compare against the acked value
+        backingCounter.inc(10);
+        assertThat(counter.getMetricValue()).isEqualTo(10L);
 
-		// properly handle decrements
-		backingCounter.dec(10);
-		assertEquals(0L, counter.getMetricValue());
-	}
+        // properly handle decrements
+        backingCounter.dec(10);
+        assertThat(counter.getMetricValue()).isEqualTo(0L);
+    }
 }

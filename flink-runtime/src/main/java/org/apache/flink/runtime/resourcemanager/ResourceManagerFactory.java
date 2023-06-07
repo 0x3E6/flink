@@ -29,9 +29,16 @@ import org.apache.flink.runtime.metrics.groups.ResourceManagerMetricGroup;
 import org.apache.flink.runtime.metrics.groups.SlotManagerMetricGroup;
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.runtime.rpc.RpcService;
+import org.apache.flink.runtime.security.token.DelegationTokenManager;
 import org.apache.flink.util.ConfigurationException;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
+
+import java.util.UUID;
+import java.util.concurrent.Executor;
 
 /**
  * {@link ResourceManager} factory.
@@ -40,62 +47,128 @@ import javax.annotation.Nullable;
  */
 public abstract class ResourceManagerFactory<T extends ResourceIDRetrievable> {
 
-	public ResourceManager<T> createResourceManager(
-			Configuration configuration,
-			ResourceID resourceId,
-			RpcService rpcService,
-			HighAvailabilityServices highAvailabilityServices,
-			HeartbeatServices heartbeatServices,
-			FatalErrorHandler fatalErrorHandler,
-			ClusterInformation clusterInformation,
-			@Nullable String webInterfaceUrl,
-			MetricRegistry metricRegistry,
-			String hostname) throws Exception {
+    protected final Logger log = LoggerFactory.getLogger(getClass());
 
-		final ResourceManagerMetricGroup resourceManagerMetricGroup = ResourceManagerMetricGroup.create(metricRegistry, hostname);
-		final SlotManagerMetricGroup slotManagerMetricGroup = SlotManagerMetricGroup.create(metricRegistry, hostname);
+    public ResourceManagerProcessContext createResourceManagerProcessContext(
+            Configuration configuration,
+            ResourceID resourceId,
+            RpcService rpcService,
+            HighAvailabilityServices highAvailabilityServices,
+            HeartbeatServices heartbeatServices,
+            DelegationTokenManager delegationTokenManager,
+            FatalErrorHandler fatalErrorHandler,
+            ClusterInformation clusterInformation,
+            @Nullable String webInterfaceUrl,
+            MetricRegistry metricRegistry,
+            String hostname,
+            Executor ioExecutor)
+            throws ConfigurationException {
 
-		final ResourceManagerRuntimeServices resourceManagerRuntimeServices = createResourceManagerRuntimeServices(
-			configuration, rpcService, highAvailabilityServices, slotManagerMetricGroup);
+        final Configuration runtimeServicesAndRmConfig =
+                getEffectiveConfigurationForResourceManagerAndRuntimeServices(configuration);
 
-		return createResourceManager(
-			configuration,
-			resourceId,
-			rpcService,
-			highAvailabilityServices,
-			heartbeatServices,
-			fatalErrorHandler,
-			clusterInformation,
-			webInterfaceUrl,
-			resourceManagerMetricGroup,
-			resourceManagerRuntimeServices);
-	}
+        final ResourceManagerRuntimeServicesConfiguration runtimeServiceConfig =
+                createResourceManagerRuntimeServicesConfiguration(runtimeServicesAndRmConfig);
 
-	protected abstract ResourceManager<T> createResourceManager(
-			Configuration configuration,
-			ResourceID resourceId,
-			RpcService rpcService,
-			HighAvailabilityServices highAvailabilityServices,
-			HeartbeatServices heartbeatServices,
-			FatalErrorHandler fatalErrorHandler,
-			ClusterInformation clusterInformation,
-			@Nullable String webInterfaceUrl,
-			ResourceManagerMetricGroup resourceManagerMetricGroup,
-			ResourceManagerRuntimeServices resourceManagerRuntimeServices) throws Exception;
+        final Configuration rmConfig =
+                getEffectiveConfigurationForResourceManager(runtimeServicesAndRmConfig);
 
-	private ResourceManagerRuntimeServices createResourceManagerRuntimeServices(
-			Configuration configuration,
-			RpcService rpcService,
-			HighAvailabilityServices highAvailabilityServices,
-			SlotManagerMetricGroup slotManagerMetricGroup) throws ConfigurationException {
+        return new ResourceManagerProcessContext(
+                rmConfig,
+                resourceId,
+                runtimeServiceConfig,
+                rpcService,
+                highAvailabilityServices,
+                heartbeatServices,
+                delegationTokenManager,
+                fatalErrorHandler,
+                clusterInformation,
+                webInterfaceUrl,
+                metricRegistry,
+                hostname,
+                ioExecutor);
+    }
 
-		return ResourceManagerRuntimeServices.fromConfiguration(
-			createResourceManagerRuntimeServicesConfiguration(configuration),
-			highAvailabilityServices,
-			rpcService.getScheduledExecutor(),
-			slotManagerMetricGroup);
-	}
+    public ResourceManager<T> createResourceManager(
+            ResourceManagerProcessContext context, UUID leaderSessionId) throws Exception {
 
-	protected abstract ResourceManagerRuntimeServicesConfiguration createResourceManagerRuntimeServicesConfiguration(
-			Configuration configuration) throws ConfigurationException;
+        final ResourceManagerRuntimeServices resourceManagerRuntimeServices =
+                createResourceManagerRuntimeServices(
+                        context.getRmRuntimeServicesConfig(),
+                        context.getRpcService(),
+                        context.getHighAvailabilityServices(),
+                        SlotManagerMetricGroup.create(
+                                context.getMetricRegistry(), context.getHostname()));
+
+        return createResourceManager(
+                context.getRmConfig(),
+                context.getResourceId(),
+                context.getRpcService(),
+                leaderSessionId,
+                context.getHeartbeatServices(),
+                context.getDelegationTokenManager(),
+                context.getFatalErrorHandler(),
+                context.getClusterInformation(),
+                context.getWebInterfaceUrl(),
+                ResourceManagerMetricGroup.create(
+                        context.getMetricRegistry(), context.getHostname()),
+                resourceManagerRuntimeServices,
+                context.getIoExecutor());
+    }
+
+    /** This indicates whether the process should be terminated after losing leadership. */
+    protected boolean supportMultiLeaderSession() {
+        return true;
+    }
+
+    /**
+     * Configuration changes in this method will be visible to both {@link ResourceManager} and
+     * {@link ResourceManagerRuntimeServices}. This can be overwritten by {@link
+     * #getEffectiveConfigurationForResourceManager}.
+     */
+    protected Configuration getEffectiveConfigurationForResourceManagerAndRuntimeServices(
+            final Configuration configuration) {
+        return configuration;
+    }
+
+    /**
+     * Configuration changes in this method will be visible to only {@link ResourceManager}. This
+     * can overwrite {@link #getEffectiveConfigurationForResourceManagerAndRuntimeServices}.
+     */
+    protected Configuration getEffectiveConfigurationForResourceManager(
+            final Configuration configuration) {
+        return configuration;
+    }
+
+    protected abstract ResourceManager<T> createResourceManager(
+            Configuration configuration,
+            ResourceID resourceId,
+            RpcService rpcService,
+            UUID leaderSessionId,
+            HeartbeatServices heartbeatServices,
+            DelegationTokenManager delegationTokenManager,
+            FatalErrorHandler fatalErrorHandler,
+            ClusterInformation clusterInformation,
+            @Nullable String webInterfaceUrl,
+            ResourceManagerMetricGroup resourceManagerMetricGroup,
+            ResourceManagerRuntimeServices resourceManagerRuntimeServices,
+            Executor ioExecutor)
+            throws Exception;
+
+    private ResourceManagerRuntimeServices createResourceManagerRuntimeServices(
+            ResourceManagerRuntimeServicesConfiguration rmRuntimeServicesConfig,
+            RpcService rpcService,
+            HighAvailabilityServices highAvailabilityServices,
+            SlotManagerMetricGroup slotManagerMetricGroup) {
+
+        return ResourceManagerRuntimeServices.fromConfiguration(
+                rmRuntimeServicesConfig,
+                highAvailabilityServices,
+                rpcService.getScheduledExecutor(),
+                slotManagerMetricGroup);
+    }
+
+    protected abstract ResourceManagerRuntimeServicesConfiguration
+            createResourceManagerRuntimeServicesConfiguration(Configuration configuration)
+                    throws ConfigurationException;
 }

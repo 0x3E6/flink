@@ -19,17 +19,14 @@
 package org.apache.flink.metrics.influxdb;
 
 import org.apache.flink.metrics.util.MetricReporterTestUtils;
-import org.apache.flink.util.TestLogger;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-/**
- * Tests for the {@link InfluxdbReporterFactory}.
- */
-public class InfluxdbReporterFactoryTest extends TestLogger {
+/** Tests for the {@link InfluxdbReporterFactory}. */
+class InfluxdbReporterFactoryTest {
 
-	@Test
-	public void testMetricReporterSetupViaSPI() {
-		MetricReporterTestUtils.testMetricReporterSetupViaSPI(InfluxdbReporterFactory.class);
-	}
+    @Test
+    void testMetricReporterSetupViaSPI() {
+        MetricReporterTestUtils.testMetricReporterSetupViaSPI(InfluxdbReporterFactory.class);
+    }
 }

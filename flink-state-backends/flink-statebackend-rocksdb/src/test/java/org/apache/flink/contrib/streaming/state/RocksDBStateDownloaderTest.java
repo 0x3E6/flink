@@ -24,6 +24,7 @@ import org.apache.flink.runtime.state.IncrementalRemoteKeyedStateHandle;
 import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.runtime.state.StateHandleID;
 import org.apache.flink.runtime.state.StreamStateHandle;
+import org.apache.flink.runtime.state.TestStreamStateHandle;
 import org.apache.flink.runtime.state.memory.ByteStreamStateHandle;
 import org.apache.flink.util.TestLogger;
 
@@ -47,117 +48,121 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 
-/**
- * Test class for {@link RocksDBStateDownloader}.
- */
+/** Test class for {@link RocksDBStateDownloader}. */
 public class RocksDBStateDownloaderTest extends TestLogger {
-	@Rule
-	public final TemporaryFolder temporaryFolder = new TemporaryFolder();
+    @Rule public final TemporaryFolder temporaryFolder = new TemporaryFolder();
 
-	/**
-	 * Test that the exception arose in the thread pool will rethrow to the main thread.
-	 */
-	@Test
-	public void testMultiThreadRestoreThreadPoolExceptionRethrow() {
-		SpecifiedException expectedException = new SpecifiedException("throw exception while multi thread restore.");
-		StreamStateHandle stateHandle = new StreamStateHandle() {
-			@Override
-			public FSDataInputStream openInputStream() throws IOException {
-				throw expectedException;
-			}
+    /** Test that the exception arose in the thread pool will rethrow to the main thread. */
+    @Test
+    public void testMultiThreadRestoreThreadPoolExceptionRethrow() {
+        SpecifiedException expectedException =
+                new SpecifiedException("throw exception while multi thread restore.");
+        StreamStateHandle stateHandle = new ThrowingStateHandle(expectedException);
 
-			@Override
-			public Optional<byte[]> asBytesIfInMemory() {
-				return Optional.empty();
-			}
+        Map<StateHandleID, StreamStateHandle> stateHandles = new HashMap<>(1);
+        stateHandles.put(new StateHandleID("state1"), stateHandle);
 
-			@Override
-			public void discardState() {
+        IncrementalRemoteKeyedStateHandle incrementalKeyedStateHandle =
+                new IncrementalRemoteKeyedStateHandle(
+                        UUID.randomUUID(),
+                        KeyGroupRange.EMPTY_KEY_GROUP_RANGE,
+                        1,
+                        stateHandles,
+                        stateHandles,
+                        stateHandle);
 
-			}
+        try (RocksDBStateDownloader rocksDBStateDownloader = new RocksDBStateDownloader(5)) {
+            rocksDBStateDownloader.transferAllStateDataToDirectory(
+                    incrementalKeyedStateHandle,
+                    temporaryFolder.newFolder().toPath(),
+                    new CloseableRegistry());
+            fail();
+        } catch (Exception e) {
+            assertEquals(expectedException, e);
+        }
+    }
 
-			@Override
-			public long getStateSize() {
-				return 0;
-			}
-		};
+    /** Tests that download files with multi-thread correctly. */
+    @Test
+    public void testMultiThreadRestoreCorrectly() throws Exception {
+        Random random = new Random();
+        int contentNum = 6;
+        byte[][] contents = new byte[contentNum][];
+        for (int i = 0; i < contentNum; ++i) {
+            contents[i] = new byte[random.nextInt(100000) + 1];
+            random.nextBytes(contents[i]);
+        }
 
-		Map<StateHandleID, StreamStateHandle> stateHandles = new HashMap<>(1);
-		stateHandles.put(new StateHandleID("state1"), stateHandle);
+        List<StreamStateHandle> handles = new ArrayList<>(contentNum);
+        for (int i = 0; i < contentNum; ++i) {
+            handles.add(new ByteStreamStateHandle(String.format("state%d", i), contents[i]));
+        }
 
-		IncrementalRemoteKeyedStateHandle incrementalKeyedStateHandle =
-			new IncrementalRemoteKeyedStateHandle(
-				UUID.randomUUID(),
-				KeyGroupRange.EMPTY_KEY_GROUP_RANGE,
-				1,
-				stateHandles,
-				stateHandles,
-				stateHandle);
+        Map<StateHandleID, StreamStateHandle> sharedStates = new HashMap<>(contentNum);
+        Map<StateHandleID, StreamStateHandle> privateStates = new HashMap<>(contentNum);
+        for (int i = 0; i < contentNum; ++i) {
+            sharedStates.put(new StateHandleID(String.format("sharedState%d", i)), handles.get(i));
+            privateStates.put(
+                    new StateHandleID(String.format("privateState%d", i)), handles.get(i));
+        }
 
-		try (RocksDBStateDownloader rocksDBStateDownloader = new RocksDBStateDownloader(5)) {
-			rocksDBStateDownloader.transferAllStateDataToDirectory(
-				incrementalKeyedStateHandle,
-				temporaryFolder.newFolder().toPath(),
-				new CloseableRegistry());
-			fail();
-		} catch (Exception e) {
-			assertEquals(expectedException, e);
-		}
-	}
+        IncrementalRemoteKeyedStateHandle incrementalKeyedStateHandle =
+                new IncrementalRemoteKeyedStateHandle(
+                        UUID.randomUUID(),
+                        KeyGroupRange.of(0, 1),
+                        1,
+                        sharedStates,
+                        privateStates,
+                        handles.get(0));
 
-	/**
-	 * Tests that download files with multi-thread correctly.
-	 */
-	@Test
-	public void testMultiThreadRestoreCorrectly() throws Exception {
-		Random random = new Random();
-		int contentNum = 6;
-		byte[][] contents = new byte[contentNum][];
-		for (int i = 0; i < contentNum; ++i) {
-			contents[i] = new byte[random.nextInt(100000) + 1];
-			random.nextBytes(contents[i]);
-		}
+        Path dstPath = temporaryFolder.newFolder().toPath();
+        try (RocksDBStateDownloader rocksDBStateDownloader = new RocksDBStateDownloader(5)) {
+            rocksDBStateDownloader.transferAllStateDataToDirectory(
+                    incrementalKeyedStateHandle, dstPath, new CloseableRegistry());
+        }
 
-		List<StreamStateHandle> handles = new ArrayList<>(contentNum);
-		for (int i = 0; i < contentNum; ++i) {
-			handles.add(new ByteStreamStateHandle(String.format("state%d", i), contents[i]));
-		}
+        for (int i = 0; i < contentNum; ++i) {
+            assertStateContentEqual(
+                    contents[i], dstPath.resolve(String.format("sharedState%d", i)));
+        }
+    }
 
-		Map<StateHandleID, StreamStateHandle> sharedStates = new HashMap<>(contentNum);
-		Map<StateHandleID, StreamStateHandle> privateStates = new HashMap<>(contentNum);
-		for (int i = 0; i < contentNum; ++i) {
-			sharedStates.put(new StateHandleID(String.format("sharedState%d", i)), handles.get(i));
-			privateStates.put(new StateHandleID(String.format("privateState%d", i)), handles.get(i));
-		}
+    private void assertStateContentEqual(byte[] expected, Path path) throws IOException {
+        byte[] actual = Files.readAllBytes(Paths.get(path.toUri()));
+        assertArrayEquals(expected, actual);
+    }
 
-		IncrementalRemoteKeyedStateHandle incrementalKeyedStateHandle =
-			new IncrementalRemoteKeyedStateHandle(
-				UUID.randomUUID(),
-				KeyGroupRange.of(0, 1),
-				1,
-				sharedStates,
-				privateStates,
-				handles.get(0));
+    private static class SpecifiedException extends IOException {
+        SpecifiedException(String message) {
+            super(message);
+        }
+    }
 
-		Path dstPath = temporaryFolder.newFolder().toPath();
-		try (RocksDBStateDownloader rocksDBStateDownloader = new RocksDBStateDownloader(5)) {
-			rocksDBStateDownloader.transferAllStateDataToDirectory(incrementalKeyedStateHandle, dstPath, new CloseableRegistry());
-		}
+    private static class ThrowingStateHandle implements TestStreamStateHandle {
+        private static final long serialVersionUID = -2102069659550694805L;
 
-		for (int i = 0; i < contentNum; ++i) {
-			assertStateContentEqual(contents[i], dstPath.resolve(String.format("sharedState%d", i)));
-		}
-	}
+        private final IOException expectedException;
 
-	private void assertStateContentEqual(byte[] expected, Path path) throws IOException {
-		byte[] actual = Files.readAllBytes(Paths.get(path.toUri()));
-		assertArrayEquals(expected, actual);
-	}
+        private ThrowingStateHandle(IOException expectedException) {
+            this.expectedException = expectedException;
+        }
 
-	private static class SpecifiedException extends IOException {
-		SpecifiedException(String message) {
-			super(message);
-		}
-	}
+        @Override
+        public FSDataInputStream openInputStream() throws IOException {
+            throw expectedException;
+        }
+
+        @Override
+        public Optional<byte[]> asBytesIfInMemory() {
+            return Optional.empty();
+        }
+
+        @Override
+        public void discardState() {}
+
+        @Override
+        public long getStateSize() {
+            return 0;
+        }
+    }
 }
-

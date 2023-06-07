@@ -22,6 +22,7 @@ import org.apache.flink.api.common.JobExecutionResult;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.core.execution.JobClient;
+import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.operators.coordination.CoordinationRequest;
 import org.apache.flink.runtime.operators.coordination.CoordinationRequestGateway;
@@ -36,98 +37,100 @@ import javax.annotation.Nullable;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
-/**
- * A {@link JobClient} to test fetching SELECT query results.
- */
+/** A {@link JobClient} to test fetching SELECT query results. */
 public class TestJobClient implements JobClient, CoordinationRequestGateway {
 
-	private final JobID jobId;
-	private final OperatorID operatorId;
-	private final CoordinationRequestHandler handler;
-	private final JobInfoProvider infoProvider;
+    private final JobID jobId;
+    private final OperatorID operatorId;
+    private final CoordinationRequestHandler handler;
+    private final JobInfoProvider infoProvider;
 
-	private JobStatus jobStatus;
-	private JobExecutionResult jobExecutionResult;
+    private JobStatus jobStatus;
+    private JobExecutionResult jobExecutionResult;
 
-	public TestJobClient(
-			JobID jobId,
-			OperatorID operatorId,
-			CoordinationRequestHandler handler,
-			JobInfoProvider infoProvider) {
-		this.jobId = jobId;
-		this.operatorId = operatorId;
-		this.handler = handler;
-		this.infoProvider = infoProvider;
+    public TestJobClient(
+            JobID jobId,
+            OperatorID operatorId,
+            CoordinationRequestHandler handler,
+            JobInfoProvider infoProvider) {
+        this.jobId = jobId;
+        this.operatorId = operatorId;
+        this.handler = handler;
+        this.infoProvider = infoProvider;
 
-		this.jobStatus = JobStatus.RUNNING;
-		this.jobExecutionResult = null;
-	}
+        this.jobStatus = JobStatus.RUNNING;
+        this.jobExecutionResult = null;
+    }
 
-	@Override
-	public JobID getJobID() {
-		return jobId;
-	}
+    @Override
+    public JobID getJobID() {
+        return jobId;
+    }
 
-	@Override
-	public CompletableFuture<JobStatus> getJobStatus() {
-		return CompletableFuture.completedFuture(jobStatus);
-	}
+    @Override
+    public CompletableFuture<JobStatus> getJobStatus() {
+        return CompletableFuture.completedFuture(jobStatus);
+    }
 
-	@Override
-	public CompletableFuture<Void> cancel() {
-		jobStatus = JobStatus.CANCELED;
-		return CompletableFuture.completedFuture(null);
-	}
+    @Override
+    public CompletableFuture<Void> cancel() {
+        jobStatus = JobStatus.CANCELED;
+        return CompletableFuture.completedFuture(null);
+    }
 
-	@Override
-	public CompletableFuture<String> stopWithSavepoint(boolean advanceToEndOfEventTime, @Nullable String savepointDirectory) {
-		throw new UnsupportedOperationException();
-	}
+    @Override
+    public CompletableFuture<String> stopWithSavepoint(
+            boolean advanceToEndOfEventTime,
+            @Nullable String savepointDirectory,
+            SavepointFormatType formatType) {
+        throw new UnsupportedOperationException();
+    }
 
-	@Override
-	public CompletableFuture<String> triggerSavepoint(@Nullable String savepointDirectory) {
-		throw new UnsupportedOperationException();
-	}
+    @Override
+    public CompletableFuture<String> triggerSavepoint(
+            @Nullable String savepointDirectory, SavepointFormatType formatType) {
+        throw new UnsupportedOperationException();
+    }
 
-	@Override
-	public CompletableFuture<Map<String, Object>> getAccumulators(ClassLoader classLoader) {
-		throw new UnsupportedOperationException();
-	}
+    @Override
+    public CompletableFuture<Map<String, Object>> getAccumulators() {
+        throw new UnsupportedOperationException();
+    }
 
-	@Override
-	public CompletableFuture<JobExecutionResult> getJobExecutionResult(ClassLoader userClassloader) {
-		return CompletableFuture.completedFuture(jobExecutionResult);
-	}
+    @Override
+    public CompletableFuture<JobExecutionResult> getJobExecutionResult() {
+        return CompletableFuture.completedFuture(jobExecutionResult);
+    }
 
-	@Override
-	public CompletableFuture<CoordinationResponse> sendCoordinationRequest(OperatorID operatorId, CoordinationRequest request) {
-		if (jobStatus.isGloballyTerminalState()) {
-			throw new RuntimeException("Job terminated");
-		}
+    @Override
+    public CompletableFuture<CoordinationResponse> sendCoordinationRequest(
+            OperatorID operatorId, CoordinationRequest request) {
+        if (jobStatus.isGloballyTerminalState()) {
+            throw new RuntimeException("Job terminated");
+        }
 
-		Assert.assertEquals(this.operatorId, operatorId);
-		CoordinationResponse response;
-		try {
-			response = handler.handleCoordinationRequest(request).get();
-		} catch (Exception e) {
-			throw new RuntimeException(e);
-		}
+        Assert.assertEquals(this.operatorId, operatorId);
+        CoordinationResponse response;
+        try {
+            response = handler.handleCoordinationRequest(request).get();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
 
-		if (infoProvider.isJobFinished()) {
-			jobStatus = JobStatus.FINISHED;
-			jobExecutionResult = new JobExecutionResult(jobId, 0, infoProvider.getAccumulatorResults());
-		}
+        if (infoProvider.isJobFinished()) {
+            jobStatus = JobStatus.FINISHED;
+            jobExecutionResult =
+                    new JobExecutionResult(jobId, 0, infoProvider.getAccumulatorResults());
+        }
 
-		return CompletableFuture.completedFuture(response);
-	}
+        return CompletableFuture.completedFuture(response);
+    }
 
-	/**
-	 * Interface to provide job related info for {@link TestJobClient}.
-	 */
-	public interface JobInfoProvider {
+    /** Interface to provide job related info for {@link TestJobClient}. */
+    public interface JobInfoProvider {
 
-		boolean isJobFinished();
+        boolean isJobFinished();
 
-		Map<String, OptionalFailure<Object>> getAccumulatorResults();
-	}
+        Map<String, OptionalFailure<Object>> getAccumulatorResults();
+    }
 }

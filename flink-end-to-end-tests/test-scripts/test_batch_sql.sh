@@ -69,17 +69,11 @@ GROUP BY TUMBLE(rowtime, INTERVAL '20' SECOND)"
 
 set_config_key "taskmanager.numberOfTaskSlots" "1"
 
-function sql_cleanup() {
-  stop_cluster
-  $FLINK_DIR/bin/taskmanager.sh stop-all
-}
-on_exit sql_cleanup
-
 start_cluster
 
 # The task has total 2 x (1 + 1 + 1 + 1) + 1 = 9 slots
 $FLINK_DIR/bin/flink run -p 2 $TEST_PROGRAM_JAR -outputPath "file://${OUTPUT_FILE_PATH}" -sqlStatement \
-    "INSERT INTO sinkTable $(sqlJobQuery)"
+    "INSERT INTO sinkTable $(sqlJobQuery)" -shuffleType $1
 
 # check result:
 #1980,1970-01-01 00:00:00.0

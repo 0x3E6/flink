@@ -18,6 +18,8 @@
 
 package org.apache.flink.table.operations.ddl;
 
+import org.apache.flink.table.api.internal.TableResultImpl;
+import org.apache.flink.table.api.internal.TableResultInternal;
 import org.apache.flink.table.catalog.CatalogView;
 import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.operations.Operation;
@@ -27,54 +29,60 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/**
- * Operation to describe a CREATE VIEW statement.
- */
+/** Operation to describe a CREATE VIEW statement. */
 public class CreateViewOperation implements CreateOperation {
-	private final ObjectIdentifier viewIdentifier;
-	private CatalogView catalogView;
-	private boolean ignoreIfExists;
-	private boolean isTemporary;
+    private final ObjectIdentifier viewIdentifier;
+    private final CatalogView catalogView;
+    private final boolean ignoreIfExists;
+    private final boolean isTemporary;
 
-	public CreateViewOperation(
-			ObjectIdentifier viewIdentifier,
-			CatalogView catalogView,
-			boolean ignoreIfExists,
-			boolean isTemporary) {
-		this.viewIdentifier = viewIdentifier;
-		this.catalogView = catalogView;
-		this.ignoreIfExists = ignoreIfExists;
-		this.isTemporary = isTemporary;
-	}
+    public CreateViewOperation(
+            ObjectIdentifier viewIdentifier,
+            CatalogView catalogView,
+            boolean ignoreIfExists,
+            boolean isTemporary) {
+        this.viewIdentifier = viewIdentifier;
+        this.catalogView = catalogView;
+        this.ignoreIfExists = ignoreIfExists;
+        this.isTemporary = isTemporary;
+    }
 
-	public CatalogView getCatalogView() {
-		return catalogView;
-	}
+    public CatalogView getCatalogView() {
+        return catalogView;
+    }
 
-	public ObjectIdentifier getViewIdentifier() {
-		return viewIdentifier;
-	}
+    public ObjectIdentifier getViewIdentifier() {
+        return viewIdentifier;
+    }
 
-	public boolean isIgnoreIfExists() {
-		return ignoreIfExists;
-	}
+    public boolean isIgnoreIfExists() {
+        return ignoreIfExists;
+    }
 
-	public boolean isTemporary() {
-		return isTemporary;
-	}
+    public boolean isTemporary() {
+        return isTemporary;
+    }
 
-	@Override
-	public String asSummaryString() {
-		Map<String, Object> params = new LinkedHashMap<>();
-		params.put("originalQuery", catalogView.getOriginalQuery());
-		params.put("expandedQuery", catalogView.getExpandedQuery());
-		params.put("identifier", viewIdentifier);
-		params.put("ignoreIfExists", ignoreIfExists);
-		params.put("isTemporary", isTemporary);
-		return OperationUtils.formatWithChildren(
-			"CREATE VIEW",
-			params,
-			Collections.emptyList(),
-			Operation::asSummaryString);
-	}
+    @Override
+    public String asSummaryString() {
+        Map<String, Object> params = new LinkedHashMap<>();
+        params.put("originalQuery", catalogView.getOriginalQuery());
+        params.put("expandedQuery", catalogView.getExpandedQuery());
+        params.put("identifier", viewIdentifier);
+        params.put("ignoreIfExists", ignoreIfExists);
+        params.put("isTemporary", isTemporary);
+        return OperationUtils.formatWithChildren(
+                "CREATE VIEW", params, Collections.emptyList(), Operation::asSummaryString);
+    }
+
+    @Override
+    public TableResultInternal execute(Context ctx) {
+        if (isTemporary) {
+            ctx.getCatalogManager()
+                    .createTemporaryTable(catalogView, viewIdentifier, ignoreIfExists);
+        } else {
+            ctx.getCatalogManager().createTable(catalogView, viewIdentifier, ignoreIfExists);
+        }
+        return TableResultImpl.TABLE_RESULT_OK;
+    }
 }

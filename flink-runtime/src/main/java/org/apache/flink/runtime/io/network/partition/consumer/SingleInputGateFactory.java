@@ -19,8 +19,10 @@
 package org.apache.flink.runtime.io.network.partition.consumer;
 
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.deployment.InputGateDeploymentDescriptor;
+import org.apache.flink.runtime.executiongraph.IndexRange;
 import org.apache.flink.runtime.io.network.ConnectionManager;
 import org.apache.flink.runtime.io.network.NettyShuffleEnvironment;
 import org.apache.flink.runtime.io.network.TaskEventPublisher;
@@ -32,234 +34,328 @@ import org.apache.flink.runtime.io.network.metrics.InputChannelMetrics;
 import org.apache.flink.runtime.io.network.partition.PartitionProducerStateProvider;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionManager;
-import org.apache.flink.runtime.io.network.partition.ResultPartitionType;
+import org.apache.flink.runtime.io.network.partition.hybrid.tiered.common.TieredStorageConfiguration;
+import org.apache.flink.runtime.io.network.partition.hybrid.tiered.storage.TieredStorageConsumerClient;
+import org.apache.flink.runtime.metrics.MetricNames;
 import org.apache.flink.runtime.shuffle.NettyShuffleDescriptor;
+import org.apache.flink.runtime.shuffle.NettyShuffleUtils;
 import org.apache.flink.runtime.shuffle.ShuffleDescriptor;
+import org.apache.flink.runtime.shuffle.ShuffleIOOwnerContext;
 import org.apache.flink.runtime.taskmanager.NettyShuffleEnvironmentConfiguration;
+import org.apache.flink.runtime.throughput.BufferDebloatConfiguration;
+import org.apache.flink.runtime.throughput.BufferDebloater;
+import org.apache.flink.runtime.throughput.ThroughputCalculator;
+import org.apache.flink.util.MathUtils;
+import org.apache.flink.util.clock.SystemClock;
 import org.apache.flink.util.function.SupplierWithException;
 
+import org.apache.commons.lang3.tuple.Pair;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.util.Optional;
 
+import static org.apache.flink.runtime.io.network.partition.consumer.InputGateSpecUtils.createGateBuffersSpec;
 import static org.apache.flink.runtime.shuffle.ShuffleUtils.applyWithShuffleTypeCheck;
 
-/**
- * Factory for {@link SingleInputGate} to use in {@link NettyShuffleEnvironment}.
- */
+/** Factory for {@link SingleInputGate} to use in {@link NettyShuffleEnvironment}. */
 public class SingleInputGateFactory {
-	private static final Logger LOG = LoggerFactory.getLogger(SingleInputGateFactory.class);
+    private static final Logger LOG = LoggerFactory.getLogger(SingleInputGateFactory.class);
 
-	@Nonnull
-	protected final ResourceID taskExecutorResourceId;
+    @Nonnull protected final ResourceID taskExecutorResourceId;
 
-	protected final int partitionRequestInitialBackoff;
+    protected final int partitionRequestInitialBackoff;
 
-	protected final int partitionRequestMaxBackoff;
+    protected final int partitionRequestMaxBackoff;
 
-	@Nonnull
-	protected final ConnectionManager connectionManager;
+    @Nonnull protected final ConnectionManager connectionManager;
 
-	@Nonnull
-	protected final ResultPartitionManager partitionManager;
+    @Nonnull protected final ResultPartitionManager partitionManager;
 
-	@Nonnull
-	protected final TaskEventPublisher taskEventPublisher;
+    @Nonnull protected final TaskEventPublisher taskEventPublisher;
 
-	@Nonnull
-	protected final NetworkBufferPool networkBufferPool;
+    @Nonnull protected final NetworkBufferPool networkBufferPool;
 
-	private final int networkBuffersPerChannel;
+    private final Optional<Integer> maxRequiredBuffersPerGate;
 
-	private final int floatingNetworkBuffersPerGate;
+    protected final int configuredNetworkBuffersPerChannel;
 
-	private final boolean blockingShuffleCompressionEnabled;
+    private final int floatingNetworkBuffersPerGate;
 
-	private final String compressionCodec;
+    private final boolean batchShuffleCompressionEnabled;
 
-	private final int networkBufferSize;
+    private final String compressionCodec;
 
-	public SingleInputGateFactory(
-			@Nonnull ResourceID taskExecutorResourceId,
-			@Nonnull NettyShuffleEnvironmentConfiguration networkConfig,
-			@Nonnull ConnectionManager connectionManager,
-			@Nonnull ResultPartitionManager partitionManager,
-			@Nonnull TaskEventPublisher taskEventPublisher,
-			@Nonnull NetworkBufferPool networkBufferPool) {
-		this.taskExecutorResourceId = taskExecutorResourceId;
-		this.partitionRequestInitialBackoff = networkConfig.partitionRequestInitialBackoff();
-		this.partitionRequestMaxBackoff = networkConfig.partitionRequestMaxBackoff();
-		this.networkBuffersPerChannel = networkConfig.networkBuffersPerChannel();
-		this.floatingNetworkBuffersPerGate = networkConfig.floatingNetworkBuffersPerGate();
-		this.blockingShuffleCompressionEnabled = networkConfig.isBlockingShuffleCompressionEnabled();
-		this.compressionCodec = networkConfig.getCompressionCodec();
-		this.networkBufferSize = networkConfig.networkBufferSize();
-		this.connectionManager = connectionManager;
-		this.partitionManager = partitionManager;
-		this.taskEventPublisher = taskEventPublisher;
-		this.networkBufferPool = networkBufferPool;
-	}
+    private final int networkBufferSize;
 
-	/**
-	 * Creates an input gate and all of its input channels.
-	 */
-	public SingleInputGate create(
-			@Nonnull String owningTaskName,
-			int gateIndex,
-			@Nonnull InputGateDeploymentDescriptor igdd,
-			@Nonnull PartitionProducerStateProvider partitionProducerStateProvider,
-			@Nonnull InputChannelMetrics metrics) {
-		SupplierWithException<BufferPool, IOException> bufferPoolFactory = createBufferPoolFactory(
-			networkBufferPool,
-			networkBuffersPerChannel,
-			floatingNetworkBuffersPerGate,
-			igdd.getShuffleDescriptors().length,
-			igdd.getConsumedPartitionType());
+    private final BufferDebloatConfiguration debloatConfiguration;
 
-		BufferDecompressor bufferDecompressor = null;
-		if (igdd.getConsumedPartitionType().isBlocking() && blockingShuffleCompressionEnabled) {
-			bufferDecompressor = new BufferDecompressor(networkBufferSize, compressionCodec);
-		}
+    @Nullable
+    private final TieredStorageConfiguration
+            tieredStorageConfiguration; // is null if tiered storage shuffle is disabled.
 
-		SingleInputGate inputGate = new SingleInputGate(
-			owningTaskName,
-			gateIndex,
-			igdd.getConsumedResultId(),
-			igdd.getConsumedPartitionType(),
-			igdd.getConsumedSubpartitionIndex(),
-			igdd.getShuffleDescriptors().length,
-			partitionProducerStateProvider,
-			bufferPoolFactory,
-			bufferDecompressor,
-			networkBufferPool);
+    public SingleInputGateFactory(
+            @Nonnull ResourceID taskExecutorResourceId,
+            @Nonnull NettyShuffleEnvironmentConfiguration networkConfig,
+            @Nonnull ConnectionManager connectionManager,
+            @Nonnull ResultPartitionManager partitionManager,
+            @Nonnull TaskEventPublisher taskEventPublisher,
+            @Nonnull NetworkBufferPool networkBufferPool,
+            @Nullable TieredStorageConfiguration tieredStorageConfiguration) {
+        this.taskExecutorResourceId = taskExecutorResourceId;
+        this.partitionRequestInitialBackoff = networkConfig.partitionRequestInitialBackoff();
+        this.partitionRequestMaxBackoff = networkConfig.partitionRequestMaxBackoff();
+        this.maxRequiredBuffersPerGate = networkConfig.maxRequiredBuffersPerGate();
+        this.configuredNetworkBuffersPerChannel =
+                NettyShuffleUtils.getNetworkBuffersPerInputChannel(
+                        networkConfig.networkBuffersPerChannel());
+        this.floatingNetworkBuffersPerGate = networkConfig.floatingNetworkBuffersPerGate();
+        this.batchShuffleCompressionEnabled = networkConfig.isBatchShuffleCompressionEnabled();
+        this.compressionCodec = networkConfig.getCompressionCodec();
+        this.networkBufferSize = networkConfig.networkBufferSize();
+        this.connectionManager = connectionManager;
+        this.partitionManager = partitionManager;
+        this.taskEventPublisher = taskEventPublisher;
+        this.networkBufferPool = networkBufferPool;
+        this.debloatConfiguration = networkConfig.getDebloatConfiguration();
+        this.tieredStorageConfiguration = tieredStorageConfiguration;
+    }
 
-		createInputChannels(owningTaskName, igdd, inputGate, metrics);
-		return inputGate;
-	}
+    /** Creates an input gate and all of its input channels. */
+    public SingleInputGate create(
+            @Nonnull ShuffleIOOwnerContext owner,
+            int gateIndex,
+            @Nonnull InputGateDeploymentDescriptor igdd,
+            @Nonnull PartitionProducerStateProvider partitionProducerStateProvider,
+            @Nonnull InputChannelMetrics metrics) {
+        GateBuffersSpec gateBuffersSpec =
+                createGateBuffersSpec(
+                        maxRequiredBuffersPerGate,
+                        configuredNetworkBuffersPerChannel,
+                        floatingNetworkBuffersPerGate,
+                        igdd.getConsumedPartitionType(),
+                        calculateNumChannels(
+                                igdd.getShuffleDescriptors().length,
+                                igdd.getConsumedSubpartitionIndexRange()));
+        SupplierWithException<BufferPool, IOException> bufferPoolFactory =
+                createBufferPoolFactory(
+                        networkBufferPool,
+                        gateBuffersSpec.getRequiredFloatingBuffers(),
+                        gateBuffersSpec.getTotalFloatingBuffers());
 
-	private void createInputChannels(
-			String owningTaskName,
-			InputGateDeploymentDescriptor inputGateDeploymentDescriptor,
-			SingleInputGate inputGate,
-			InputChannelMetrics metrics) {
-		ShuffleDescriptor[] shuffleDescriptors = inputGateDeploymentDescriptor.getShuffleDescriptors();
+        BufferDecompressor bufferDecompressor = null;
+        if (igdd.getConsumedPartitionType().supportCompression()
+                && batchShuffleCompressionEnabled) {
+            bufferDecompressor = new BufferDecompressor(networkBufferSize, compressionCodec);
+        }
 
-		// Create the input channels. There is one input channel for each consumed partition.
-		InputChannel[] inputChannels = new InputChannel[shuffleDescriptors.length];
+        final String owningTaskName = owner.getOwnerName();
+        final MetricGroup networkInputGroup = owner.getInputGroup();
 
-		ChannelStatistics channelStatistics = new ChannelStatistics();
+        IndexRange subpartitionIndexRange = igdd.getConsumedSubpartitionIndexRange();
+        TieredStorageConsumerClient tieredStorageConsumerClient = null;
+        if (tieredStorageConfiguration != null) {
+            tieredStorageConsumerClient =
+                    new TieredStorageConsumerClient(tieredStorageConfiguration.getTierFactories());
+        }
+        SingleInputGate inputGate =
+                new SingleInputGate(
+                        owningTaskName,
+                        gateIndex,
+                        igdd.getConsumedResultId(),
+                        igdd.getConsumedPartitionType(),
+                        subpartitionIndexRange,
+                        calculateNumChannels(
+                                igdd.getShuffleDescriptors().length, subpartitionIndexRange),
+                        partitionProducerStateProvider,
+                        bufferPoolFactory,
+                        bufferDecompressor,
+                        networkBufferPool,
+                        networkBufferSize,
+                        new ThroughputCalculator(SystemClock.getInstance()),
+                        maybeCreateBufferDebloater(
+                                owningTaskName, gateIndex, networkInputGroup.addGroup(gateIndex)),
+                        tieredStorageConsumerClient);
 
-		for (int i = 0; i < inputChannels.length; i++) {
-			inputChannels[i] = createInputChannel(
-				inputGate,
-				i,
-				shuffleDescriptors[i],
-				channelStatistics,
-				metrics);
-		}
-		inputGate.setInputChannels(inputChannels);
+        createInputChannels(
+                owningTaskName, igdd, inputGate, subpartitionIndexRange, gateBuffersSpec, metrics);
+        return inputGate;
+    }
 
-		LOG.debug("{}: Created {} input channels ({}).",
-			owningTaskName,
-			inputChannels.length,
-			channelStatistics);
-	}
+    private BufferDebloater maybeCreateBufferDebloater(
+            String owningTaskName, int gateIndex, MetricGroup inputGroup) {
+        if (debloatConfiguration.isEnabled()) {
+            final BufferDebloater bufferDebloater =
+                    new BufferDebloater(
+                            owningTaskName,
+                            gateIndex,
+                            debloatConfiguration.getTargetTotalBufferSize().toMillis(),
+                            debloatConfiguration.getMaxBufferSize(),
+                            debloatConfiguration.getMinBufferSize(),
+                            debloatConfiguration.getBufferDebloatThresholdPercentages(),
+                            debloatConfiguration.getNumberOfSamples());
+            inputGroup.gauge(
+                    MetricNames.ESTIMATED_TIME_TO_CONSUME_BUFFERS,
+                    () -> bufferDebloater.getLastEstimatedTimeToConsumeBuffers().toMillis());
+            inputGroup.gauge(MetricNames.DEBLOATED_BUFFER_SIZE, bufferDebloater::getLastBufferSize);
+            return bufferDebloater;
+        }
 
-	private InputChannel createInputChannel(
-			SingleInputGate inputGate,
-			int index,
-			ShuffleDescriptor shuffleDescriptor,
-			ChannelStatistics channelStatistics,
-			InputChannelMetrics metrics) {
-		return applyWithShuffleTypeCheck(
-			NettyShuffleDescriptor.class,
-			shuffleDescriptor,
-			unknownShuffleDescriptor -> {
-				channelStatistics.numUnknownChannels++;
-				return new UnknownInputChannel(
-					inputGate,
-					index,
-					unknownShuffleDescriptor.getResultPartitionID(),
-					partitionManager,
-					taskEventPublisher,
-					connectionManager,
-					partitionRequestInitialBackoff,
-					partitionRequestMaxBackoff,
-					metrics);
-			},
-			nettyShuffleDescriptor ->
-				createKnownInputChannel(
-					inputGate,
-					index,
-					nettyShuffleDescriptor,
-					channelStatistics,
-					metrics));
-	}
+        return null;
+    }
 
-	@VisibleForTesting
-	protected InputChannel createKnownInputChannel(
-			SingleInputGate inputGate,
-			int index,
-			NettyShuffleDescriptor inputChannelDescriptor,
-			ChannelStatistics channelStatistics,
-			InputChannelMetrics metrics) {
-		ResultPartitionID partitionId = inputChannelDescriptor.getResultPartitionID();
-		if (inputChannelDescriptor.isLocalTo(taskExecutorResourceId)) {
-			// Consuming task is deployed to the same TaskManager as the partition => local
-			channelStatistics.numLocalChannels++;
-			return new LocalRecoveredInputChannel(
-				inputGate,
-				index,
-				partitionId,
-				partitionManager,
-				taskEventPublisher,
-				partitionRequestInitialBackoff,
-				partitionRequestMaxBackoff,
-				metrics);
-		} else {
-			// Different instances => remote
-			channelStatistics.numRemoteChannels++;
-			return new RemoteRecoveredInputChannel(
-				inputGate,
-				index,
-				partitionId,
-				inputChannelDescriptor.getConnectionId(),
-				connectionManager,
-				partitionRequestInitialBackoff,
-				partitionRequestMaxBackoff,
-				metrics);
-		}
-	}
+    private void createInputChannels(
+            String owningTaskName,
+            InputGateDeploymentDescriptor inputGateDeploymentDescriptor,
+            SingleInputGate inputGate,
+            IndexRange subpartitionIndexRange,
+            GateBuffersSpec gateBuffersSpec,
+            InputChannelMetrics metrics) {
+        ShuffleDescriptor[] shuffleDescriptors =
+                inputGateDeploymentDescriptor.getShuffleDescriptors();
 
-	@VisibleForTesting
-	static SupplierWithException<BufferPool, IOException> createBufferPoolFactory(
-			BufferPoolFactory bufferPoolFactory,
-			int networkBuffersPerChannel,
-			int floatingNetworkBuffersPerGate,
-			int size,
-			ResultPartitionType type) {
-		// Note that we should guarantee at-least one floating buffer for local channel state recovery.
-		return () -> bufferPoolFactory.createBufferPool(1, floatingNetworkBuffersPerGate);
-	}
+        // Create the input channels. There is one input channel for each consumed subpartition.
+        InputChannel[] inputChannels =
+                new InputChannel
+                        [calculateNumChannels(shuffleDescriptors.length, subpartitionIndexRange)];
 
-	/**
-	 * Statistics of input channels.
-	 */
-	protected static class ChannelStatistics {
-		int numLocalChannels;
-		int numRemoteChannels;
-		int numUnknownChannels;
+        ChannelStatistics channelStatistics = new ChannelStatistics();
 
-		@Override
-		public String toString() {
-			return String.format(
-				"local: %s, remote: %s, unknown: %s",
-				numLocalChannels,
-				numRemoteChannels,
-				numUnknownChannels);
-		}
-	}
+        int channelIdx = 0;
+        for (int i = 0; i < shuffleDescriptors.length; ++i) {
+            for (int subpartitionIndex = subpartitionIndexRange.getStartIndex();
+                    subpartitionIndex <= subpartitionIndexRange.getEndIndex();
+                    ++subpartitionIndex) {
+                inputChannels[channelIdx] =
+                        createInputChannel(
+                                inputGate,
+                                channelIdx,
+                                gateBuffersSpec.getEffectiveExclusiveBuffersPerChannel(),
+                                shuffleDescriptors[i],
+                                subpartitionIndex,
+                                channelStatistics,
+                                metrics);
+                channelIdx++;
+            }
+        }
+
+        inputGate.setInputChannels(inputChannels);
+
+        LOG.debug(
+                "{}: Created {} input channels ({}).",
+                owningTaskName,
+                inputChannels.length,
+                channelStatistics);
+    }
+
+    private InputChannel createInputChannel(
+            SingleInputGate inputGate,
+            int index,
+            int buffersPerChannel,
+            ShuffleDescriptor shuffleDescriptor,
+            int consumedSubpartitionIndex,
+            ChannelStatistics channelStatistics,
+            InputChannelMetrics metrics) {
+        return applyWithShuffleTypeCheck(
+                NettyShuffleDescriptor.class,
+                shuffleDescriptor,
+                unknownShuffleDescriptor -> {
+                    channelStatistics.numUnknownChannels++;
+                    return new UnknownInputChannel(
+                            inputGate,
+                            index,
+                            unknownShuffleDescriptor.getResultPartitionID(),
+                            consumedSubpartitionIndex,
+                            partitionManager,
+                            taskEventPublisher,
+                            connectionManager,
+                            partitionRequestInitialBackoff,
+                            partitionRequestMaxBackoff,
+                            buffersPerChannel,
+                            metrics);
+                },
+                nettyShuffleDescriptor ->
+                        createKnownInputChannel(
+                                inputGate,
+                                index,
+                                buffersPerChannel,
+                                nettyShuffleDescriptor,
+                                consumedSubpartitionIndex,
+                                channelStatistics,
+                                metrics));
+    }
+
+    private static int calculateNumChannels(
+            int numShuffleDescriptors, IndexRange subpartitionIndexRange) {
+        return MathUtils.checkedDownCast(
+                ((long) numShuffleDescriptors) * subpartitionIndexRange.size());
+    }
+
+    @VisibleForTesting
+    protected InputChannel createKnownInputChannel(
+            SingleInputGate inputGate,
+            int index,
+            int buffersPerChannel,
+            NettyShuffleDescriptor inputChannelDescriptor,
+            int consumedSubpartitionIndex,
+            ChannelStatistics channelStatistics,
+            InputChannelMetrics metrics) {
+        ResultPartitionID partitionId = inputChannelDescriptor.getResultPartitionID();
+        if (inputChannelDescriptor.isLocalTo(taskExecutorResourceId)) {
+            // Consuming task is deployed to the same TaskManager as the partition => local
+            channelStatistics.numLocalChannels++;
+            return new LocalRecoveredInputChannel(
+                    inputGate,
+                    index,
+                    partitionId,
+                    consumedSubpartitionIndex,
+                    partitionManager,
+                    taskEventPublisher,
+                    partitionRequestInitialBackoff,
+                    partitionRequestMaxBackoff,
+                    buffersPerChannel,
+                    metrics);
+        } else {
+            // Different instances => remote
+            channelStatistics.numRemoteChannels++;
+            return new RemoteRecoveredInputChannel(
+                    inputGate,
+                    index,
+                    partitionId,
+                    consumedSubpartitionIndex,
+                    inputChannelDescriptor.getConnectionId(),
+                    connectionManager,
+                    partitionRequestInitialBackoff,
+                    partitionRequestMaxBackoff,
+                    buffersPerChannel,
+                    metrics);
+        }
+    }
+
+    @VisibleForTesting
+    static SupplierWithException<BufferPool, IOException> createBufferPoolFactory(
+            BufferPoolFactory bufferPoolFactory,
+            int minFloatingBuffersPerGate,
+            int maxFloatingBuffersPerGate) {
+        Pair<Integer, Integer> pair = Pair.of(minFloatingBuffersPerGate, maxFloatingBuffersPerGate);
+        return () -> bufferPoolFactory.createBufferPool(pair.getLeft(), pair.getRight());
+    }
+
+    /** Statistics of input channels. */
+    protected static class ChannelStatistics {
+        int numLocalChannels;
+        int numRemoteChannels;
+        int numUnknownChannels;
+
+        @Override
+        public String toString() {
+            return String.format(
+                    "local: %s, remote: %s, unknown: %s",
+                    numLocalChannels, numRemoteChannels, numUnknownChannels);
+        }
+    }
 }
